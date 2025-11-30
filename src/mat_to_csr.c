@@ -39,6 +39,20 @@ static int cmp_int(const void *a, const void *b) {
   return (*(int *)a - *(int *)b);
 }
 
+typedef struct {
+  int id;
+  int degree;
+} NodeDegree;
+
+static int cmp_degree_desc(const void *a, const void *b) {
+  NodeDegree *n1 = (NodeDegree *)a;
+  NodeDegree *n2 = (NodeDegree *)b;
+  if (n1->degree != n2->degree) {
+    return n2->degree - n1->degree; // Descending
+  }
+  return n1->id - n2->id; // Ascending ID as tie-breaker
+}
+
 // Check if graph is symmetric
 static int is_symmetric(const CSR_info *csr) {
   int symmetric = 1;
@@ -399,6 +413,106 @@ CSR_info mat_to_csr(char *file_name) {
     printf("Symmetrization complete. New edges: %d\n", csr.nzcount);
   } else {
     printf("Graph is symmetric.\n");
+  }
+
+  // Optimization: Graph Reordering (Degree Descending)
+  // This improves cache locality by clustering high-degree nodes (hubs)
+  // together.
+  printf("Reordering graph (Degree Descending)...\n");
+
+  // 1. Calculate degrees and create permutation
+  NodeDegree *nodes = malloc(csr.nrows * sizeof(NodeDegree));
+  if (nodes) {
+    cilk_for(int i = 0; i < csr.nrows; i++) {
+      nodes[i].id = i;
+      nodes[i].degree = csr.row_ptr[i + 1] - csr.row_ptr[i];
+    }
+
+    // Sort by degree descending
+    // We use a block-based parallel sort if possible, but qsort is standard.
+    // For 200M nodes, qsort might take a moment, but it's preprocessing.
+    qsort(nodes, csr.nrows, sizeof(NodeDegree), cmp_degree_desc);
+
+    // 2. Build permutation maps
+    int *old_to_new = malloc(csr.nrows * sizeof(int));
+    int *new_to_old = malloc(csr.nrows * sizeof(int));
+
+    if (old_to_new && new_to_old) {
+      cilk_for(int i = 0; i < csr.nrows; i++) {
+        new_to_old[i] = nodes[i].id;
+        old_to_new[nodes[i].id] = i;
+      }
+      free(nodes); // Done with nodes array
+
+      // 3. Build new CSR
+      int *new_row_ptr =
+          aligned_alloc_wrapper((size_t)(csr.nrows + 1) * sizeof(int));
+      int *new_col_idx =
+          aligned_alloc_wrapper((size_t)csr.nzcount * sizeof(int));
+
+      if (new_row_ptr && new_col_idx) {
+        new_row_ptr[0] = 0;
+
+        // Calculate new row pointers
+        int *new_degrees = malloc(csr.nrows * sizeof(int));
+        cilk_for(int i = 0; i < csr.nrows; i++) {
+          int old_u = new_to_old[i];
+          new_degrees[i] = csr.row_ptr[old_u + 1] - csr.row_ptr[old_u];
+        }
+
+        for (int i = 0; i < csr.nrows; i++) {
+          new_row_ptr[i + 1] = new_row_ptr[i] + new_degrees[i];
+        }
+        free(new_degrees);
+
+        // Fill new col_idx
+        cilk_for(int i = 0; i < csr.nrows; i++) {
+          int old_u = new_to_old[i];
+          int start_old = csr.row_ptr[old_u];
+          int end_old = csr.row_ptr[old_u + 1];
+
+          int start_new = new_row_ptr[i];
+
+          for (int j = 0; j < (end_old - start_old); j++) {
+            int old_v = csr.col_idx[start_old + j];
+            int new_v = old_to_new[old_v];
+            new_col_idx[start_new + j] = new_v;
+          }
+
+          // Sort neighbors in new_col_idx to maintain sorted property
+          if (end_old - start_old > 1) {
+            qsort(&new_col_idx[start_new], end_old - start_old, sizeof(int),
+                  cmp_int);
+          }
+        }
+
+        // Replace CSR
+        free(csr.row_ptr);
+        free(csr.col_idx);
+        csr.row_ptr = new_row_ptr;
+        csr.col_idx = new_col_idx;
+
+        printf("Graph reordering complete.\n");
+      } else {
+        printf("Failed to allocate memory for reordered graph.\n");
+        if (new_row_ptr)
+          free(new_row_ptr);
+        if (new_col_idx)
+          free(new_col_idx);
+      }
+      free(old_to_new);
+      free(new_to_old);
+    } else {
+      printf("Failed to allocate permutation arrays.\n");
+      if (old_to_new)
+        free(old_to_new);
+      if (new_to_old)
+        free(new_to_old);
+      if (nodes)
+        free(nodes);
+    }
+  } else {
+    printf("Failed to allocate nodes array for sorting.\n");
   }
 
   // Cleanup dynamically allocated used vectors
