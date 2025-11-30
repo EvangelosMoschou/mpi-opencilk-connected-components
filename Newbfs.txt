@@ -1,0 +1,426 @@
+#include "cc_opencilk.h"
+#include "cc_common.h"
+
+#include <cilk/cilk.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+#include <stdbool.h>
+
+#include "cilk_stub.h"
+
+/**
+ * Link two vertices u and v using union-find with path compression
+ * Based on the Link function from the GAP Benchmark Suite Afforest implementation
+ * Uses atomic compare-and-swap for thread-safety
+ */
+__attribute__((always_inline)) inline
+static void link_vertices(const int32_t u, const int32_t v, int32_t* restrict parents)
+{
+    /* Read parent values */
+    int32_t p1 = parents[u];
+    int32_t p2 = parents[v];
+
+    while (p1 != p2)
+    {
+        const int32_t high = (p1 > p2) ? p1 : p2;
+        const int32_t low = (p1 < p2) ? p1 : p2;
+        const int32_t p_high = parents[high];
+        int32_t expected = high;
+
+        if ((p_high == low) || // Was already 'low'
+            (p_high == high && (__atomic_compare_exchange_n( // Succeeded on writing 'low'
+                &parents[high], &expected, low, false,
+                __ATOMIC_SEQ_CST,
+                __ATOMIC_SEQ_CST))))
+        {
+            break;
+        }
+
+        p1 = parents[expected]; // Update with actual value after CAS
+        p2 = parents[low];
+    }
+}
+
+/**
+ * Recursive path compression with divide-and-conquer
+ * Uses cilk_spawn for better parallelism than cilk_for
+ */
+static void compress_cilk_recursive(int32_t *parents, const int32_t start, const int32_t end) {
+    const int32_t GRAIN_SIZE = 1024; // Tuned for compression workload
+
+    if (end - start <= GRAIN_SIZE) {
+        /* Sequential base case */
+        for (int32_t n = start; n < end; n++) {
+            while (parents[parents[n]] != parents[n]) {
+                parents[n] = parents[parents[n]];
+            }
+        }
+    } else {
+        /* Recursive parallel case */
+        const int32_t mid = start + (end - start) / 2;
+        cilk_spawn compress_cilk_recursive(parents, start, mid);
+        compress_cilk_recursive(parents, mid, end);
+        cilk_sync;
+    }
+}
+
+/**
+ * Helper structure for parallel max-finding
+ */
+typedef struct
+{
+    int32_t max_val;
+    int32_t max_idx;
+} max_result_t;
+
+/**
+ * Parallel divide-and-conquer max-finding
+ * Uses cilk_spawn for recursive parallelism
+ */
+static max_result_t find_max_range(const int32_t* array, const int32_t start, const int32_t end)
+{
+    const int32_t GRAIN_SIZE = 1024;
+    max_result_t result;
+
+    if (end - start <= GRAIN_SIZE)
+    {
+        /* Sequential base case */
+        result.max_val = array[start];
+        result.max_idx = start;
+
+        for (int32_t i = start + 1; i < end; i++)
+        {
+            if (array[i] > result.max_val)
+            {
+                result.max_val = array[i];
+                result.max_idx = i;
+            }
+        }
+    }
+    else
+    {
+        /* Parallel recursive case */
+        const int32_t mid = start + (end - start) / 2;
+
+        const max_result_t left = cilk_spawn find_max_range(array, start, mid);
+        const max_result_t right = find_max_range(array, mid, end);
+        cilk_sync;
+
+        result = (left.max_val > right.max_val) ? left : right;
+    }
+
+    return result;
+}
+
+/**
+ * Parallel version of sample_frequent_element using Cilk
+ * Uses cilk_for for parallel sampling and divide-and-conquer for max-finding
+ */
+int32_t sample_frequent_element_cilk(const int32_t* comp, const int32_t num_vertices, const int32_t num_samples)
+{
+    if (comp == NULL || num_vertices <= 0 || num_samples <= 0)
+    {
+        fprintf(stderr, "Error: Invalid parameters for sample_frequent_element\n");
+        return -1;
+    }
+
+    /* Allocate counter array for tracking sample counts */
+    int32_t* sample_counts = calloc((size_t)num_vertices, sizeof(int32_t));
+    if (sample_counts == NULL)
+    {
+        fprintf(stderr, "Error: Failed to allocate sample_counts array\n");
+        return -1;
+    }
+
+    /* Parallel sampling phase using cilk_for */
+    const unsigned int base_seed = (unsigned int)(time(NULL) ^ (time_t)(uintptr_t)comp);
+
+    cilk_for (int32_t i = 0; i < num_samples; i++)
+    {
+        /* Each iteration gets its own seed based on iteration number */
+        unsigned int thread_seed = base_seed + (unsigned int)i;
+        const int rand_val = rand_r(&thread_seed);
+        const unsigned int rand_val_unsigned = (unsigned int)rand_val;
+        const int32_t idx = (int32_t)(rand_val_unsigned % (unsigned int)num_vertices);
+        const int32_t component_id = comp[idx];
+
+        /* Bounds check to prevent heap corruption */
+        if (component_id >= 0 && component_id < num_vertices)
+        {
+            /* Atomic increment to avoid race conditions */
+            __atomic_add_fetch(&sample_counts[component_id], 1, __ATOMIC_RELAXED);
+        }
+    }
+
+    /* Parallel max-finding phase using divide-and-conquer */
+    const max_result_t result = find_max_range(sample_counts, 0, num_vertices);
+    const int32_t most_frequent_id = result.max_idx;
+    const int32_t max_count = result.max_val;
+
+    /* Calculate and print percentage */
+    const float percentage = (float)max_count / (float)num_samples * 100.0f;
+    printf("Skipping largest intermediate component (ID: %d, approx. %.1f%% of the graph)\n",
+           most_frequent_id, percentage);
+
+    free(sample_counts);
+    return most_frequent_id;
+}
+
+/**
+ * Afforest algorithm - Parallel connected components using OpenCilk
+ * Based on the algorithm from the GAP Benchmark Suite
+ *
+ * Algorithm phases:
+ * 1. Initialize: Each vertex is its own parent
+ * 2. Neighbor rounds: Process first k neighbors per vertex (sampling phase)
+ * 3. Find largest component (to skip in final phase for better load balancing)
+ * 4. Final linking: Process remaining neighbors
+ * 5. Final compression: Compress all paths to roots
+ */
+CCResult* afforest_cilk(const Graph* restrict g, int num_threads, int32_t neighbor_rounds)
+{
+    /* Check arguments */
+    if (g == NULL)
+    {
+        fprintf(stderr, "Error: NULL graph pointer\n");
+        return NULL;
+    }
+
+    const int32_t num_vertices = graph_get_num_vertices(g);
+    if (num_vertices <= 0)
+    {
+        fprintf(stderr, "Error: Invalid number of vertices\n");
+        return NULL;
+    }
+
+    /* Note: num_threads parameter is ignored in Cilk - use CILK_NWORKERS environment variable instead */
+    (void)num_threads;
+
+    /* Allocate result structure */
+    CCResult* restrict result = malloc(sizeof(CCResult));
+    if (result == NULL)
+    {
+        fprintf(stderr, "Error: Failed to allocate CCResult\n");
+        return NULL;
+    }
+
+    /* Allocate aligned parent array (� in the algorithm) for better cache performance */
+    int32_t* parents = aligned_alloc(64, sizeof(int32_t) * (size_t)num_vertices);
+    if (parents == NULL)
+    {
+        fprintf(stderr, "Error: Failed to allocate parent array\n");
+        free(result);
+        return NULL;
+    }
+
+    /* Phase 1: Initialize - each vertex is its own parent (�(v) � v) */
+    cilk_for (int32_t i = 0; i < num_vertices; i++)
+    {
+        parents[i] = i;
+    }
+
+    /* Set default neighbor_rounds if needed */
+    if (neighbor_rounds <= 0)
+    {
+        neighbor_rounds = 2; // Default: sample first 2 neighbors
+    }
+
+    /* Phase 2: Neighbor rounds - process first k neighbors per vertex */
+    for (int32_t r = 0; r < neighbor_rounds; ++r)
+    {
+        /* Parallel loop over all vertices */
+        cilk_for (int32_t u = 0; u < num_vertices; u++)
+        {
+            const int32_t start = g->row_ptr[u];
+            const int32_t end = g->row_ptr[u + 1];
+            const int32_t num_neighbors = end - start;
+
+            /* Process r-th neighbor if it exists */
+            if (r < num_neighbors)
+            {
+                const int32_t v = g->col_idx[start + r];
+                link_vertices(u, v, parents);
+            }
+        }
+        /* Compress paths after each round with recursive divide-and-conquer */
+        compress_cilk_recursive(parents, 0, num_vertices);
+    }
+
+    /* Phase 3: Sample to find largest intermediate component */
+    const int32_t largest_component = sample_frequent_element_cilk(parents, num_vertices, 1024);
+
+    /* Phase 4: Final linking - process remaining neighbors */
+    /* Skip vertices already in largest component for better load balancing */
+    cilk_for (int32_t u = 0; u < num_vertices; u++)
+    {
+        if (parents[u] == largest_component) continue;
+
+        const int32_t start = g->row_ptr[u];
+        const int32_t end = g->row_ptr[u + 1];
+
+        /* Process remaining neighbors (after neighbor_rounds) */
+        for (int32_t j = start + neighbor_rounds; j < end; j++)
+        {
+            const int32_t v = g->col_idx[j];
+            link_vertices(u, v, parents);
+        }
+    }
+
+    /* Phase 5: Final compression with recursive divide-and-conquer */
+    compress_cilk_recursive(parents, 0, num_vertices);
+
+    /* Store final labels in result */
+    result->labels = parents;
+    result->num_iterations = neighbor_rounds + 1; // Sampling rounds + final phase
+
+    /* Count connected components */
+    result->num_components = count_unique_labels(result->labels, num_vertices);
+    if (result->num_components < 0)
+    {
+        fprintf(stderr, "Error: Failed to count components\n");
+        free(result->labels);
+        free(result);
+        return NULL;
+    }
+
+    return result;
+}
+
+/* ========================================================================
+ * RECURSIVE EDGE-BASED UNION-FIND
+ * ======================================================================== */
+
+/**
+ * Recursive vertex processing with divide-and-conquer
+ * Processes vertices directly from CSR format (no edge list conversion)
+ * Uses edge reordering: only process edge (u,v) where u < v
+ */
+static void process_vertices_recursive(
+    const Graph *g,
+    int32_t start,
+    int32_t end,
+    int32_t *parents
+) {
+    const int32_t GRAIN_SIZE = 512; // Vertices per sequential chunk
+
+    if (end - start <= GRAIN_SIZE) {
+        /* Sequential base case: process vertices [start, end) */
+        for (int32_t u = start; u < end; u++) {
+            const int32_t row_start = g->row_ptr[u];
+            const int32_t row_end = g->row_ptr[u + 1];
+
+            for (int32_t j = row_start; j < row_end; j++) {
+                const int32_t v = g->col_idx[j];
+                if (u < v) {  /* Edge reordering: only process once */
+                    link_vertices(u, v, parents);
+                }
+            }
+        }
+    } else {
+        /* Recursive parallel case - divide vertex range */
+        const int32_t mid = start + (end - start) / 2;
+
+        cilk_spawn process_vertices_recursive(g, start, mid, parents);
+        process_vertices_recursive(g, mid, end, parents);
+        cilk_sync;
+    }
+}
+
+/**
+ * Recursive path compression with divide-and-conquer
+ * Uses cilk_spawn instead of cilk_for for more recursive parallelism
+ */
+static void compress_recursive(int32_t *parents, int32_t start, int32_t end) {
+    const int32_t GRAIN_SIZE = 32768; //
+    if (parents == NULL){
+        return;
+    }
+
+    if (end - start <= GRAIN_SIZE) {
+        /* Sequential base case */
+        for (int32_t n = start; n < end; n++) {
+            while (parents[parents[n]] != parents[n]) {
+                parents[n] = parents[parents[n]];
+            }
+        }
+    } else {
+        /* Recursive parallel case */
+        const int32_t mid = start + (end - start) / 2;
+        cilk_spawn compress_recursive(parents, start, mid);
+        compress_recursive(parents, mid, end);
+        cilk_sync;
+    }
+}
+
+/**
+ * Recursive Edge-Based Union-Find - Connected Components using divide-and-conquer
+ *
+ * Showcases OpenCilk features:
+ * - Heavy use of cilk_spawn (O(log n) levels of recursion)
+ * - Divide-and-conquer parallelism
+ * - Better irregular load balancing through work-stealing
+ * - Lower theoretical span than data-parallel approaches
+ *
+ * Algorithm:
+ * 1. Convert graph to edge list
+ * 2. Initialize parent array (each vertex is its own parent)
+ * 3. Recursively process edges using divide-and-conquer
+ * 4. Recursively compress paths
+ * 5. Count components
+ */
+CCResult *recursive_edge_cc(const Graph *restrict g, int num_threads) {
+    if (g == NULL) {
+        fprintf(stderr, "Error: NULL graph pointer\n");
+        return NULL;
+    }
+
+    const int32_t num_vertices = graph_get_num_vertices(g);
+    if (num_vertices <= 0) {
+        fprintf(stderr, "Error: Invalid number of vertices\n");
+        return NULL;
+    }
+
+    (void)num_threads; // Ignored - use CILK_NWORKERS
+
+    /* Allocate result structure */
+    CCResult *result = malloc(sizeof(CCResult));
+    if (result == NULL) {
+        fprintf(stderr, "Error: Failed to allocate CCResult\n");
+        return NULL;
+    }
+
+    /* Allocate parent array */
+    result->labels = malloc((size_t)num_vertices * sizeof(int32_t));
+    if (result->labels == NULL) {
+        fprintf(stderr, "Error: Failed to allocate labels array\n");
+        free(result);
+        return NULL;
+    }
+
+    /* Initialize: each vertex is its own parent */
+    cilk_for (int32_t i = 0; i < num_vertices; i++) {
+        result->labels[i] = i;
+    }
+
+    /* Process vertices recursively with divide-and-conquer
+     * Works directly with CSR format (no edge list conversion) */
+    process_vertices_recursive(g, 0, num_vertices, result->labels);
+
+    /* Compress paths recursively */
+    compress_recursive(result->labels, 0, num_vertices);
+
+    /* Count connected components */
+    result->num_components = count_unique_labels(result->labels, num_vertices);
+    if (result->num_components < 0) {
+        fprintf(stderr, "Error: Failed to count components\n");
+        free(result->labels);
+        free(result);
+        return NULL;
+    }
+
+    result->num_iterations = 1; // Single union-find pass
+
+    return result;
+}

@@ -51,6 +51,8 @@ The application processes large undirected graphs stored in MATLAB `.mat` format
 
 ### 1. Prerequisites
 - **Clang/LLVM** with OpenCilk support.
+    - The `Makefile` automatically attempts to locate the `cilk` compiler command.
+    - If `cilk` is not found, it falls back to `clang`.
 - **OpenMPI** (or compatible MPI implementation).
 - **libmatio** (for reading `.mat` files).
 

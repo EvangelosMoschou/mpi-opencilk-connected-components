@@ -225,6 +225,153 @@ int mpi_coloring_cc(MPI_Graph *g) {
   int global_changed = 1;
   int iterations = 0;
 
+  static int sampling_rounds = 0;
+  static int sampling_k = 2;
+  static int prefetch_dist = 16;
+  static int zero_planting = 1;
+  static int config_loaded = 0;
+
+  if (!config_loaded) {
+    char *env_rounds = getenv("BFS_SAMPLING_ROUNDS");
+    if (env_rounds)
+      sampling_rounds = atoi(env_rounds);
+
+    char *env_k = getenv("BFS_SAMPLING_K");
+    if (env_k)
+      sampling_k = atoi(env_k);
+
+    char *env_dist = getenv("BFS_PREFETCH_DIST");
+    if (env_dist)
+      prefetch_dist = atoi(env_dist);
+
+    char *env_zp = getenv("BFS_ZERO_PLANTING");
+    if (env_zp)
+      zero_planting = atoi(env_zp);
+
+    if (g->rank == 0) {
+      printf("MPI BFS Config: Sampling Rounds=%d, K=%d, Prefetch Dist=%d, Zero "
+             "Planting=%d\n",
+             sampling_rounds, sampling_k, prefetch_dist, zero_planting);
+    }
+    config_loaded = 1;
+  }
+
+  // Optimization: Zero Planting
+  if (zero_planting && iterations == 0) {
+    // 1. Find local max degree
+    int local_max_v = -1;
+    int local_max_deg = -1;
+
+    for (int i = 0; i < local_n; i++) {
+      int deg = (g->internal_row_ptr[i + 1] - g->internal_row_ptr[i]) +
+                (g->remote_row_ptr[i + 1] - g->remote_row_ptr[i]);
+      if (deg > local_max_deg) {
+        local_max_deg = deg;
+        local_max_v = i;
+      }
+    }
+
+    // 2. Find global max degree
+    struct {
+      int val;
+      int rank;
+    } local_max, global_max;
+
+    local_max.val = local_max_deg;
+    local_max.rank = rank;
+
+    MPI_Allreduce(&local_max, &global_max, 1, MPI_2INT, MPI_MAXLOC,
+                  MPI_COMM_WORLD);
+
+    // 3. Swap labels[0] (global ID 0, on rank 0) with labels[global_max_v] (on
+    // global_max.rank) Note: We don't know the exact local index of global max
+    // on that rank yet, but that rank knows its local_max_v.
+
+    // We need the rank that won to know WHICH of its vertices was the max.
+    // But MPI_MAXLOC only gives us the rank. It doesn't tell us the index on
+    // that rank. So the winner rank needs to broadcast "I am the winner, and my
+    // max vertex is X". Actually, only the winner needs to act.
+
+    int winner_rank = global_max.rank;
+
+    if (rank == 0 && winner_rank == 0) {
+      // Local swap on rank 0
+      if (local_max_v != 0) { // If max degree is not already vertex 0
+        int temp = labels[0];
+        labels[0] = labels[local_max_v];
+        labels[local_max_v] = temp;
+        // Initial Push
+        int val = labels[local_max_v];
+
+        // Calculate local average degree (heuristic)
+        int local_avg_deg =
+            (local_n > 0) ? (g->internal_row_ptr[local_n] / local_n) : 0;
+
+        // Internal neighbors
+        int start = g->internal_row_ptr[local_max_v];
+        int end = g->internal_row_ptr[local_max_v + 1];
+        for (int j = start; j < end; j++) {
+          int neighbor = g->internal_col_idx[j];
+          if (atomic_min(&labels[neighbor - my_offset], val)) {
+            bitset_set(next_changed, neighbor - my_offset);
+
+            // Hub Push: If neighbor is a hub, push to its neighbors
+            // Note: neighbor is local (internal edge)
+            int neighbor_local_idx = neighbor - my_offset;
+            int neighbor_deg = (g->internal_row_ptr[neighbor_local_idx + 1] -
+                                g->internal_row_ptr[neighbor_local_idx]);
+            // We ignore remote degree for simplicity in this heuristic check
+
+            if (neighbor_deg > local_avg_deg) {
+              int n_start = g->internal_row_ptr[neighbor_local_idx];
+              int n_end = g->internal_row_ptr[neighbor_local_idx + 1];
+              for (int k = n_start; k < n_end; k++) {
+                int w = g->internal_col_idx[k];
+                if (atomic_min(&labels[w - my_offset], val)) {
+                  bitset_set(next_changed, w - my_offset);
+                }
+              }
+            }
+          }
+        }
+        // Remote neighbors (mark for sending next round? Or send now?)
+        // For simplicity, we just mark them as changed so they get processed in
+        // the first iteration. Actually, we should probably just set
+        // bitset_set(changed, local_max_v) and let the loop handle it? But we
+        // want to "flood" instantly. Let's just mark the max vertex as changed
+        // and let the first iteration handle propagation. That's safer and
+        // simpler for MPI.
+        bitset_set(changed, local_max_v);
+      }
+    } else if (rank == 0) {
+      // Rank 0 needs to swap its labels[0] with Winner Rank
+      int my_val = labels[0];
+      int other_val;
+      MPI_Status status;
+
+      // Send my_val to winner, Recv other_val from winner
+      MPI_Sendrecv(&my_val, 1, MPI_INT, winner_rank, 0, &other_val, 1, MPI_INT,
+                   winner_rank, 0, MPI_COMM_WORLD, &status);
+
+      labels[0] = other_val;
+      bitset_set(changed, 0); // Mark as changed to propagate new label
+    } else if (rank == winner_rank) {
+      // I am the winner. Swap my labels[local_max_v] with Rank 0
+      int my_val = labels[local_max_v];
+      int other_val;
+      MPI_Status status;
+
+      MPI_Sendrecv(&my_val, 1, MPI_INT, 0, 0, &other_val, 1, MPI_INT, 0, 0,
+                   MPI_COMM_WORLD, &status);
+
+      labels[local_max_v] = other_val;
+      bitset_set(changed, local_max_v); // Mark as changed to propagate
+    }
+
+    // Ensure everyone agrees on the start state
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+
   // Buffers for packing
   int **proc_buffers = malloc(size * sizeof(int *));
   int *proc_caps = malloc(size * sizeof(int));
@@ -247,18 +394,90 @@ int mpi_coloring_cc(MPI_Graph *g) {
       if (bitset_test(changed, i)) {
         int val = labels[i];
 
-        // Path Compression
-        while (val > my_offset && val <= my_offset + local_n) {
-          int parent = labels[val - my_offset - 1];
-          if (parent < val)
-            val = parent;
-          else
-            break;
+        // Optimization: Early Retirement
+        // If I already have the global minimum label (1), I don't need to do
+        // anything unless I need to propagate to neighbors who might not have
+        // it. But if I am 1, I only propagate 1. Wait, if I am 1, I should
+        // propagate to neighbors. But if I was *already* 1 in previous round
+        // and processed, I wouldn't be in 'changed'. If I just became 1, I need
+        // to propagate. So this check might be redundant if 'changed' logic is
+        // correct. However, if we scan all vertices (not using frontier), it's
+        // useful. Here we use frontier 'changed'. But let's keep it for
+        // safety/clarity or if we switch to dense scan. Actually, for
+        // frontier-based, if we are in 'changed', we MUST propagate. So "Early
+        // Retirement" in the sense of "skip processing" applies if we are NOT
+        // in changed. But maybe the user meant "if I see a neighbor with 1, I
+        // take it and stop looking at other neighbors". That is handled by
+        // atomic_min logic.
+
+        // Let's stick to the request: "if (my_label == 1) continue;" at top of
+        // loop. But if my_label is 1, I *should* propagate 1 to neighbors! If I
+        // continue, I stop propagating. That would be bad. UNLESS the logic is:
+        // "If I have 1, I have converged. My neighbors will get it from me."
+        // No, I am the active vertex. I need to push to neighbors.
+
+        // Re-reading user request: "If a vertex acquires the 0 (global minimum)
+        // label, it permanently retires." This implies it doesn't need to be
+        // processed again. But it needs to process ONCE to tell neighbors.
+        // After that, it is removed from 'changed'.
+        // So the frontier logic naturally handles retirement.
+        // Maybe the optimization is for the *pull* model? Or dense scan?
+        // In our push-based frontier model, if I am 1, I propagate. Next round
+        // I am not in 'changed'. So I am retired.
+
+        // However, maybe the user means: "If I am iterating neighbors and I
+        // find a neighbor is already 1, skip it?" Or "If I am 1, I don't need
+        // to check my parent pointer?"
+
+        // Let's implement the check as requested but ensure we don't break
+        // propagation. If I am 1, I still need to propagate. But maybe I don't
+        // need path compression?
+        if (val == 1) {
+          // I am 1. I don't need path compression.
+          // I just propagate 1 to neighbors.
+        } else {
+          // Path Compression (Local Pointer Jumping)
+          while (val > my_offset && val <= my_offset + local_n) {
+            int parent = labels[val - my_offset - 1];
+            if (parent < val)
+              val = parent;
+            else
+              break;
+          }
+        }
+
+        // Optimization: Early Update (Global Pointer Jumping effect)
+        if (val < labels[i]) {
+          if (atomic_min(&labels[i], val)) {
+            // If we updated ourselves, we are definitely changed for next round
+            // But here we are processing 'changed' from previous round.
+            // This update helps future lookups of this vertex.
+          }
         }
 
         int start = g->internal_row_ptr[i];
         int end = g->internal_row_ptr[i + 1];
-        for (int j = start; j < end; j++) {
+
+        int limit = end;
+        if (iterations <= sampling_rounds) {
+          if (start + sampling_k < end)
+            limit = start + sampling_k;
+        }
+        for (int j = start; j < limit; j++) {
+          // Optimization: Software Prefetching
+          if (prefetch_dist > 0) {
+            // Stage 1: Prefetch neighbor index
+            if (j + prefetch_dist * 2 < limit) {
+              __builtin_prefetch(&g->internal_col_idx[j + prefetch_dist * 2], 0,
+                                 3);
+            }
+            // Stage 2: Prefetch label
+            if (j + prefetch_dist < limit) {
+              int neighbor_next = g->internal_col_idx[j + prefetch_dist];
+              __builtin_prefetch(&labels[neighbor_next - my_offset], 0, 3);
+            }
+          }
+
           int neighbor = g->internal_col_idx[j];
           // No range check needed for internal edges
           if (atomic_min(&labels[neighbor - my_offset], val)) {
@@ -288,7 +507,20 @@ int mpi_coloring_cc(MPI_Graph *g) {
 
         int start = g->remote_row_ptr[u];
         int end = g->remote_row_ptr[u + 1];
-        for (int j = start; j < end; j++) {
+
+        int limit = end;
+        if (iterations <= sampling_rounds) {
+          if (start + sampling_k < end)
+            limit = start + sampling_k;
+        }
+        for (int j = start; j < limit; j++) {
+          // Optimization: Software Prefetching for remote edges
+          // We are reading remote_col_idx and remote_owners.
+          if (prefetch_dist > 0 && j + prefetch_dist < limit) {
+            __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
+            __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
+          }
+
           int neighbor = g->remote_col_idx[j];
           int owner = g->remote_owners[j];
 
