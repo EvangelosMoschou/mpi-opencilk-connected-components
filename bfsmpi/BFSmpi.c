@@ -1,23 +1,24 @@
-//Keep the implementation label propagation only, use parts of other algorithms
-//But keep the base label propagation. It is asked for the assignment.
+// Keep the implementation label propagation only, use parts of other algorithms
+// But keep the base label propagation. It is asked for the assignment.
 #define _POSIX_C_SOURCE 200809L
 #include "bfs_mpi.h"
 #include <cilk/cilk.h>
 #include <cilk/cilk_api.h>
 #include <mpi.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-
 
 // Helper for aligned allocation (64-byte alignment for AVX-512/Cache lines)
-static void* aligned_alloc_wrapper(size_t size) {
-    void *ptr = NULL;
-    if (posix_memalign(&ptr, 64, size) != 0) {
-        return NULL;
-    }
-    return ptr;
+static void *aligned_alloc_wrapper(size_t size) {
+  void *ptr = NULL;
+  if (posix_memalign(&ptr, 64, size) != 0) {
+    fprintf(stderr, "Error: Aligned allocation failed for size %zu\n", size);
+    MPI_Abort(MPI_COMM_WORLD, MPI_ERR_NO_MEM);
+    return NULL;
+  }
+  return ptr;
 }
 
 // Atomic Min Helper
@@ -31,8 +32,26 @@ static inline int atomic_min(int *addr, int val) {
   return 0;
 }
 
+// Bitset helpers
+#define BITSET_WORD_SIZE (sizeof(uint64_t) * 8)
+#define BITSET_WORDS(n) (((n) + BITSET_WORD_SIZE - 1) / BITSET_WORD_SIZE)
+
+static inline void bitset_set(uint64_t *b, int idx) {
+  __atomic_fetch_or(&b[idx / BITSET_WORD_SIZE],
+                    (1UL << (idx % BITSET_WORD_SIZE)), __ATOMIC_RELAXED);
+}
+
+static inline int bitset_test(const uint64_t *b, int idx) {
+  return (b[idx / BITSET_WORD_SIZE] & (1UL << (idx % BITSET_WORD_SIZE))) != 0;
+}
+
+static inline void bitset_clear(uint64_t *b, size_t num_words) {
+  memset(b, 0, num_words * sizeof(uint64_t));
+}
+
 // Helper to find owner of a global vertex
-static inline int get_owner(int global_id, int base, int cutoff, int base_plus_1) {
+static inline int get_owner(int global_id, int base, int cutoff,
+                            int base_plus_1) {
   if (global_id < cutoff) {
     return global_id / base_plus_1;
   } else {
@@ -57,29 +76,90 @@ typedef struct {
 static CommInfo comm;
 
 void setup_communication(MPI_Graph *g) {
-  int *temp = malloc(g->local_n * sizeof(int));
+  // Precompute distribution parameters
+  int base = g->global_n / g->size;
+  int remainder = g->global_n % g->size;
+  int cutoff = remainder * (base + 1);
+  int base_plus_1 = base + 1;
+
+  // 1. Count internal and remote edges
+  g->internal_nnz = 0;
+  g->remote_nnz = 0;
   comm.boundary_count = 0;
+
+  int *temp_boundary = malloc(g->local_n * sizeof(int));
 
   for (int i = 0; i < g->local_n; i++) {
     int start = g->local_row_ptr[i];
     int end = g->local_row_ptr[i + 1];
-    int is_boundary = 0;
+    int has_remote = 0;
     for (int j = start; j < end; j++) {
       int neighbor = g->local_col_idx[j];
-      if (neighbor < g->vtx_dist[g->rank] ||
-          neighbor >= g->vtx_dist[g->rank + 1]) {
-        is_boundary = 1;
-        break;
+      if (neighbor >= g->vtx_dist[g->rank] &&
+          neighbor < g->vtx_dist[g->rank + 1]) {
+        g->internal_nnz++;
+      } else {
+        g->remote_nnz++;
+        has_remote = 1;
       }
     }
-    if (is_boundary) {
-      temp[comm.boundary_count++] = i;
+    if (has_remote) {
+      temp_boundary[comm.boundary_count++] = i;
     }
   }
-  comm.boundary_indices = malloc(comm.boundary_count * sizeof(int));
-  memcpy(comm.boundary_indices, temp, comm.boundary_count * sizeof(int));
-  free(temp);
 
+  comm.boundary_indices = malloc(comm.boundary_count * sizeof(int));
+  memcpy(comm.boundary_indices, temp_boundary,
+         comm.boundary_count * sizeof(int));
+  free(temp_boundary);
+
+  // 2. Allocate split arrays
+  g->internal_row_ptr = aligned_alloc_wrapper((g->local_n + 1) * sizeof(int));
+  g->internal_col_idx = aligned_alloc_wrapper(g->internal_nnz * sizeof(int));
+
+  g->remote_row_ptr = aligned_alloc_wrapper((g->local_n + 1) * sizeof(int));
+  g->remote_col_idx = aligned_alloc_wrapper(g->remote_nnz * sizeof(int));
+  g->remote_owners = aligned_alloc_wrapper(g->remote_nnz * sizeof(int));
+
+  // 3. Fill split arrays
+  int internal_pos = 0;
+  int remote_pos = 0;
+  g->internal_row_ptr[0] = 0;
+  g->remote_row_ptr[0] = 0;
+
+  for (int i = 0; i < g->local_n; i++) {
+    int start = g->local_row_ptr[i];
+    int end = g->local_row_ptr[i + 1];
+
+    for (int j = start; j < end; j++) {
+      int neighbor = g->local_col_idx[j];
+      if (neighbor >= g->vtx_dist[g->rank] &&
+          neighbor < g->vtx_dist[g->rank + 1]) {
+        g->internal_col_idx[internal_pos++] = neighbor;
+      } else {
+        g->remote_col_idx[remote_pos] = neighbor;
+        // Compute owner
+        int owner;
+        if (neighbor < cutoff) {
+          owner = neighbor / base_plus_1;
+        } else {
+          owner = (cutoff / base_plus_1) + (neighbor - cutoff) / base;
+        }
+        g->remote_owners[remote_pos] = owner;
+        remote_pos++;
+      }
+    }
+    g->internal_row_ptr[i + 1] = internal_pos;
+    g->remote_row_ptr[i + 1] = remote_pos;
+  }
+
+  // Free original adjacency lists to save memory
+  free(g->local_row_ptr);
+  free(g->local_col_idx);
+  g->local_row_ptr = NULL;
+  g->local_col_idx = NULL;
+
+  // Init comm buffers
   comm.send_counts = calloc(g->size, sizeof(int));
   comm.recv_counts = calloc(g->size, sizeof(int));
   comm.send_displs = calloc(g->size, sizeof(int));
@@ -128,13 +208,19 @@ int mpi_coloring_cc(MPI_Graph *g) {
   // Initialize labels (1-based)
   cilk_for(int i = 0; i < local_n; i++) { labels[i] = my_offset + i + 1; }
 
-  // Frontier arrays to track changed vertices
-  int8_t *changed = aligned_alloc_wrapper(local_n * sizeof(int8_t));
-  int8_t *next_changed = aligned_alloc_wrapper(local_n * sizeof(int8_t));
+  // Frontier arrays to track changed vertices (Bitsets)
+  size_t frontier_words = BITSET_WORDS(local_n);
+  uint64_t *changed = aligned_alloc_wrapper(frontier_words * sizeof(uint64_t));
+  uint64_t *next_changed =
+      aligned_alloc_wrapper(frontier_words * sizeof(uint64_t));
 
   // Initially all vertices are active
-  for (int i = 0; i < local_n; i++)
-    changed[i] = 1;
+  memset(changed, 0xFF, frontier_words * sizeof(uint64_t));
+  // Clear padding bits in the last word if necessary
+  if (local_n % BITSET_WORD_SIZE != 0) {
+    uint64_t mask = (1UL << (local_n % BITSET_WORD_SIZE)) - 1;
+    changed[frontier_words - 1] &= mask;
+  }
 
   int global_changed = 1;
   int iterations = 0;
@@ -154,11 +240,11 @@ int mpi_coloring_cc(MPI_Graph *g) {
     int local_changed = 0;
 
     // Reset next_changed
-    memset(next_changed, 0, local_n * sizeof(int8_t));
+    bitset_clear(next_changed, frontier_words);
 
     // 1. Local Propagation
     cilk_for(int i = 0; i < local_n; i++) {
-      if (changed[i]) {
+      if (bitset_test(changed, i)) {
         int val = labels[i];
 
         // Path Compression
@@ -170,14 +256,13 @@ int mpi_coloring_cc(MPI_Graph *g) {
             break;
         }
 
-        int start = g->local_row_ptr[i];
-        int end = g->local_row_ptr[i + 1];
+        int start = g->internal_row_ptr[i];
+        int end = g->internal_row_ptr[i + 1];
         for (int j = start; j < end; j++) {
-          int neighbor = g->local_col_idx[j];
-          if (neighbor >= my_offset && neighbor < my_offset + local_n) {
-            if (atomic_min(&labels[neighbor - my_offset], val)) {
-              next_changed[neighbor - my_offset] = 1;
-            }
+          int neighbor = g->internal_col_idx[j];
+          // No range check needed for internal edges
+          if (atomic_min(&labels[neighbor - my_offset], val)) {
+            bitset_set(next_changed, neighbor - my_offset);
           }
         }
       }
@@ -189,7 +274,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
 
     for (int i = 0; i < comm.boundary_count; i++) {
       int u = comm.boundary_indices[i];
-      if (changed[u]) {
+      if (bitset_test(changed, u)) {
         int val = labels[u];
 
         // Path Compression
@@ -201,29 +286,32 @@ int mpi_coloring_cc(MPI_Graph *g) {
             break;
         }
 
-        int start = g->local_row_ptr[u];
-        int end = g->local_row_ptr[u + 1];
+        int start = g->remote_row_ptr[u];
+        int end = g->remote_row_ptr[u + 1];
         for (int j = start; j < end; j++) {
-          int neighbor = g->local_col_idx[j];
-          int owner = get_owner(neighbor, base, cutoff, base_plus_1);
-          if (owner != rank) {
-            if (proc_counts[owner] + 2 > proc_caps[owner]) {
-              proc_caps[owner] *= 2;
-              int *new_buf = aligned_alloc_wrapper(proc_caps[owner] * sizeof(int));
-              memcpy(new_buf, proc_buffers[owner], proc_counts[owner] * sizeof(int));
-              free(proc_buffers[owner]);
-              proc_buffers[owner] = new_buf;
-            }
-            proc_buffers[owner][proc_counts[owner]++] = neighbor;
-            proc_buffers[owner][proc_counts[owner]++] = val;
+          int neighbor = g->remote_col_idx[j];
+          int owner = g->remote_owners[j];
+
+          if (proc_counts[owner] + 2 > proc_caps[owner]) {
+            proc_caps[owner] *= 2;
+            int *new_buf =
+                aligned_alloc_wrapper(proc_caps[owner] * sizeof(int));
+            memcpy(new_buf, proc_buffers[owner],
+                   proc_counts[owner] * sizeof(int));
+            free(proc_buffers[owner]);
+            proc_buffers[owner] = new_buf;
           }
+          proc_buffers[owner][proc_counts[owner]++] = neighbor;
+          proc_buffers[owner][proc_counts[owner]++] = val;
         }
       }
     }
 
     // 3. Exchange
-    MPI_Alltoall(proc_counts, 1, MPI_INT, comm.recv_counts, 1, MPI_INT,
-                 MPI_COMM_WORLD);
+    int err = MPI_Alltoall(proc_counts, 1, MPI_INT, comm.recv_counts, 1,
+                           MPI_INT, MPI_COMM_WORLD);
+    if (err != MPI_SUCCESS)
+      MPI_Abort(MPI_COMM_WORLD, err);
 
     int total_recv = 0;
     for (int p = 0; p < size; p++) {
@@ -234,7 +322,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
     if (total_recv > comm.recv_buf_cap) {
       comm.recv_buf_cap = total_recv + 1024;
       int *new_buf = aligned_alloc_wrapper(comm.recv_buf_cap * sizeof(int));
-      memcpy(new_buf, comm.recv_buf, total_recv * sizeof(int)); // Note: old content might not be needed but safe to copy
+
       free(comm.recv_buf);
       comm.recv_buf = new_buf;
     }
@@ -243,18 +331,25 @@ int mpi_coloring_cc(MPI_Graph *g) {
 
     for (int p = 0; p < size; p++) {
       if (comm.recv_counts[p] > 0) {
-        MPI_Irecv(comm.recv_buf + comm.recv_displs[p], comm.recv_counts[p],
-                  MPI_INT, p, 0, MPI_COMM_WORLD, &comm.reqs[nreqs++]);
+        err =
+            MPI_Irecv(comm.recv_buf + comm.recv_displs[p], comm.recv_counts[p],
+                      MPI_INT, p, 0, MPI_COMM_WORLD, &comm.reqs[nreqs++]);
+        if (err != MPI_SUCCESS)
+          MPI_Abort(MPI_COMM_WORLD, err);
       }
     }
     for (int p = 0; p < size; p++) {
       if (proc_counts[p] > 0) {
-        MPI_Isend(proc_buffers[p], proc_counts[p], MPI_INT, p, 0,
-                  MPI_COMM_WORLD, &comm.reqs[nreqs++]);
+        err = MPI_Isend(proc_buffers[p], proc_counts[p], MPI_INT, p, 0,
+                        MPI_COMM_WORLD, &comm.reqs[nreqs++]);
+        if (err != MPI_SUCCESS)
+          MPI_Abort(MPI_COMM_WORLD, err);
       }
     }
 
-    MPI_Waitall(nreqs, comm.reqs, MPI_STATUSES_IGNORE);
+    err = MPI_Waitall(nreqs, comm.reqs, MPI_STATUSES_IGNORE);
+    if (err != MPI_SUCCESS)
+      MPI_Abort(MPI_COMM_WORLD, err);
 
     // 4. Process Received
     for (int p = 0; p < size; p++) {
@@ -265,7 +360,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
         int val = buf[k + 1];
         if (target >= my_offset && target < my_offset + local_n) {
           if (atomic_min(&labels[target - my_offset], val)) {
-            next_changed[target - my_offset] = 1;
+            bitset_set(next_changed, target - my_offset);
           }
         }
       }
@@ -273,14 +368,14 @@ int mpi_coloring_cc(MPI_Graph *g) {
 
     // 5. Termination
     // Swap changed and next_changed
-    int8_t *tmp = changed;
+    uint64_t *tmp = changed;
     changed = next_changed;
     next_changed = tmp;
 
     // Check if any local changes occurred
     local_changed = 0;
-    for (int i = 0; i < local_n; i++) {
-      if (changed[i]) {
+    for (size_t i = 0; i < frontier_words; i++) {
+      if (changed[i] != 0) {
         local_changed = 1;
         break;
       }
@@ -302,10 +397,16 @@ int mpi_coloring_cc(MPI_Graph *g) {
 }
 
 void mpi_cleanup_graph(MPI_Graph *g) {
-  free(g->local_row_ptr);
-  free(g->local_col_idx);
+  // local_row_ptr and local_col_idx are freed in setup_communication
   free(g->local_labels);
   free(g->vtx_dist);
+
+  // Free split arrays
+  free(g->internal_row_ptr);
+  free(g->internal_col_idx);
+  free(g->remote_row_ptr);
+  free(g->remote_col_idx);
+  free(g->remote_owners);
 }
 
 int mpi_gather_labels(MPI_Graph *g, int *global_labels) {

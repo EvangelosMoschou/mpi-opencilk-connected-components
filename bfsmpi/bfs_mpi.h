@@ -4,15 +4,25 @@
 #include <mpi.h>
 
 typedef struct {
-    int rank;           // MPI process rank
-    int size;           // Total number of MPI processes
-    int local_n;        // Number of local vertices
-    int global_n;       // Total vertices in the graph
-    int *local_row_ptr; // Local CSR row pointers (size: local_n + 1)
-    int *local_col_idx; // Local CSR column indices (size: local_nnz)
-    int *local_labels;  // Local component labels (size: local_n)
-    int *vtx_dist;      // Distribution of vertices across processes (size: size + 1)
-    int local_nnz;      // Number of local edges
+  int rank;           // MPI process rank
+  int size;           // Total number of MPI processes
+  int local_n;        // Number of local vertices
+  int global_n;       // Total vertices in the graph
+  int *local_row_ptr; // Local CSR row pointers (size: local_n + 1)
+  int *local_col_idx; // Local CSR column indices (size: local_nnz)
+  int *local_labels;  // Local component labels (size: local_n)
+  int *vtx_dist; // Distribution of vertices across processes (size: size + 1)
+  int local_nnz; // Number of local edges
+
+  // Optimization: Split adjacency lists
+  int *internal_row_ptr;
+  int *internal_col_idx;
+  int internal_nnz;
+
+  int *remote_row_ptr;
+  int *remote_col_idx;
+  int *remote_owners;
+  int remote_nnz;
 } MPI_Graph;
 
 // Partition vertices: process p gets vertices [vtx_dist[p], vtx_dist[p+1])

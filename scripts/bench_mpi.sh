@@ -22,7 +22,7 @@ if [ ! -x "$BIN_MPI" ]; then
 fi
 
 # Configurations to test: <num_procs>x<num_workers> -> total cores used
-CONFIGS=("1x16")
+CONFIGS=("1x16" "2x8" "4x4" "8x2")
 REPEATS=${2:-1}
 
 # Set OpenCilk to use a fixed worker policy per process via CILK_NWORKERS env var
