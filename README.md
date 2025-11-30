@@ -1,6 +1,4 @@
-<<<<<<< HEAD
-# PkD_Project2
-=======
+
 # Parallel Connected Components — Hybrid MPI + OpenCilk
 
 A high-performance hybrid parallel implementation of graph connected components using **MPI** (distributed memory) and **OpenCilk** (shared memory).
@@ -139,4 +137,4 @@ See `MPI_IMPLEMENTATION_PLAN.md` for the roadmap to extend this to distributed c
 ## License
 
 Academic project for AUTH Parallel Computing course.
->>>>>>> origin/master
+
