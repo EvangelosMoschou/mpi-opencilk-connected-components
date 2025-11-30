@@ -1,0 +1,31 @@
+# Binaries and Object files
+bin/
+obj/
+obj_cilk/
+obj_mpi/
+*.o
+*.so
+*.a
+*.out
+main_best
+
+# Logs and Profiling data
+logs/
+*.log
+*.profdata
+*.profraw
+
+# Data files (Large inputs and cached binaries)
+Mat file/*.mat
+Mat file/*.csrbin
+*.csrbin
+
+# Editor configuration
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Backups
+*.bak
+bfsmpi.bak/
