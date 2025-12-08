@@ -92,6 +92,44 @@ typedef struct {
 
 static CommInfo comm;
 
+// Thread Local Storage for Parallel Packing
+typedef struct {
+  int **buffers; // [rank][data...]
+  int *counts;   // [rank]
+  int *caps;     // [rank]
+} TLS_Buffer;
+
+static TLS_Buffer *tls_buffers = NULL;
+static int n_workers = 1;
+
+void init_tls_buffers(int workers, int size) {
+  n_workers = workers;
+  tls_buffers = malloc(workers * sizeof(TLS_Buffer));
+  for(int w=0; w<workers; w++) {
+    tls_buffers[w].buffers = malloc(size * sizeof(int*));
+    tls_buffers[w].counts = calloc(size, sizeof(int));
+    tls_buffers[w].caps = malloc(size * sizeof(int));
+    for(int p=0; p<size; p++) {
+      tls_buffers[w].caps[p] = 4096; // Initial small cap
+      tls_buffers[w].buffers[p] = malloc(tls_buffers[w].caps[p] * sizeof(int));
+    }
+  }
+}
+
+void free_tls_buffers(int workers, int size) {
+  if(!tls_buffers) return;
+  for(int w=0; w<workers; w++) {
+    for(int p=0; p<size; p++) {
+      free(tls_buffers[w].buffers[p]);
+    }
+    free(tls_buffers[w].buffers);
+    free(tls_buffers[w].counts);
+    free(tls_buffers[w].caps);
+  }
+  free(tls_buffers);
+  tls_buffers = NULL;
+}
+
 void setup_communication(MPI_Graph *g) {
   // Precompute distribution parameters
 
@@ -240,6 +278,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
   static int sampling_k = 2;
   static int prefetch_dist = 16;
   static int zero_planting = 1;
+  static int use_hybrid_packing = 0;
   static int config_loaded = 0;
 
   if (!config_loaded) {
@@ -259,12 +298,26 @@ int mpi_coloring_cc(MPI_Graph *g) {
     if (env_zp)
       zero_planting = atoi(env_zp);
 
+    char *env_hybrid = getenv("BFS_HYBRID_PACKING");
+    if (env_hybrid)
+      use_hybrid_packing = atoi(env_hybrid);
+
     if (g->rank == 0) {
       printf("MPI BFS Config: Sampling Rounds=%d, K=%d, Prefetch Dist=%d, Zero "
-             "Planting=%d\n",
-             sampling_rounds, sampling_k, prefetch_dist, zero_planting);
+             "Planting=%d, Hybrid Packing=%d\n",
+             sampling_rounds, sampling_k, prefetch_dist, zero_planting, use_hybrid_packing);
     }
     config_loaded = 1;
+  }
+
+  // Init Thread Local Storage if Hybrid Packing is enabled
+  int workers = 1;
+  #if defined(__opencilk) || defined(__cilk) || defined(__opencilk__)
+    workers = __cilkrts_get_nworkers();
+  #endif
+  
+  if (use_hybrid_packing && workers > 1) {
+    init_tls_buffers(workers, size);
   }
 
   // Optimization: Zero Planting
@@ -499,55 +552,137 @@ int mpi_coloring_cc(MPI_Graph *g) {
     }
 
     // 2. Pack Messages
-    for (int p = 0; p < size; p++)
-      proc_counts[p] = 0;
-
-    for (int i = 0; i < comm.boundary_count; i++) {
-      int u = comm.boundary_indices[i];
-      if (bitset_test(changed, u)) {
-        int val = labels[u];
-
-        // Path Compression
-        while (val > my_offset && val <= my_offset + local_n) {
-          int parent = labels[val - my_offset - 1];
-          if (parent < val)
-            val = parent;
-          else
-            break;
+    if (use_hybrid_packing && n_workers > 1) {
+        // Parallel Pack Messages
+        // Clear TLS counts
+        cilk_for(int w = 0; w < n_workers; w++) {
+          memset(tls_buffers[w].counts, 0, size * sizeof(int));
         }
 
-        int start = g->remote_row_ptr[u];
-        int end = g->remote_row_ptr[u + 1];
+        cilk_for(int i = 0; i < comm.boundary_count; i++) {
+          int tid = 0;
+          #if defined(__opencilk) || defined(__cilk) || defined(__opencilk__)
+            tid = __cilkrts_get_worker_number();
+          #endif
+          
+          int u = comm.boundary_indices[i];
+          if (bitset_test(changed, u)) {
+            int val = labels[u];
 
-        int limit = end;
-        if (iterations <= sampling_rounds) {
-          if (start + sampling_k < end)
-            limit = start + sampling_k;
-        }
-        for (int j = start; j < limit; j++) {
-          // Optimization: Software Prefetching for remote edges
-          // We are reading remote_col_idx and remote_owners.
-          if (prefetch_dist > 0 && j + prefetch_dist < limit) {
-            __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
-            __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
+            // Path Compression
+            while (val > my_offset && val <= my_offset + local_n) {
+              int parent = labels[val - my_offset - 1];
+              if (parent < val)
+                val = parent;
+              else
+                break;
+            }
+
+            int start = g->remote_row_ptr[u];
+            int end = g->remote_row_ptr[u + 1];
+
+            int limit = end;
+            if (iterations <= sampling_rounds) {
+              if (start + sampling_k < end)
+                limit = start + sampling_k;
+            }
+            for (int j = start; j < limit; j++) {
+               // Prefetching
+               if (prefetch_dist > 0 && j + prefetch_dist < limit) {
+                 __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
+                 __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
+               }
+
+              int neighbor = g->remote_col_idx[j];
+              int owner = g->remote_owners[j];
+              
+              // Append to TLS buffer
+              int cnt = tls_buffers[tid].counts[owner];
+              if (cnt + 2 > tls_buffers[tid].caps[owner]) {
+                 tls_buffers[tid].caps[owner] *= 2;
+                 // Simple realloc equivalent
+                 int *old_b = tls_buffers[tid].buffers[owner];
+                 int *new_b = malloc(tls_buffers[tid].caps[owner] * sizeof(int)); 
+                 memcpy(new_b, old_b, cnt * sizeof(int));
+                 free(old_b);
+                 tls_buffers[tid].buffers[owner] = new_b;
+              }
+              tls_buffers[tid].buffers[owner][cnt] = neighbor;
+              tls_buffers[tid].buffers[owner][cnt+1] = val;
+              tls_buffers[tid].counts[owner] = cnt + 2;
+            }
           }
-
-          int neighbor = g->remote_col_idx[j];
-          int owner = g->remote_owners[j];
-
-          if (proc_counts[owner] + 2 > proc_caps[owner]) {
-            proc_caps[owner] *= 2;
-            int *new_buf =
-                aligned_alloc_wrapper(proc_caps[owner] * sizeof(int));
-            memcpy(new_buf, proc_buffers[owner],
-                   proc_counts[owner] * sizeof(int));
-            free(proc_buffers[owner]);
-            proc_buffers[owner] = new_buf;
-          }
-          proc_buffers[owner][proc_counts[owner]++] = neighbor;
-          proc_buffers[owner][proc_counts[owner]++] = val;
         }
-      }
+
+        // Merge TLS buffers into main proc_buffers
+        cilk_for(int p = 0; p < size; p++) {
+          int total = 0;
+          for(int w=0; w<n_workers; w++) total += tls_buffers[w].counts[p];
+          
+          proc_counts[p] = total;
+          if (total > proc_caps[p]) {
+            while(proc_caps[p] < total) proc_caps[p] *= 2;
+            free(proc_buffers[p]);
+            proc_buffers[p] = aligned_alloc_wrapper(proc_caps[p] * sizeof(int));
+          }
+          
+          int offset = 0;
+          for(int w=0; w<n_workers; w++) {
+            int c = tls_buffers[w].counts[p];
+            if(c > 0) {
+              memcpy(proc_buffers[p] + offset, tls_buffers[w].buffers[p], c * sizeof(int));
+              offset += c;
+            }
+          }
+        }
+    } else {
+        // Serial Pack Messages
+        for (int p = 0; p < size; p++)
+          proc_counts[p] = 0;
+
+        for (int i = 0; i < comm.boundary_count; i++) {
+          int u = comm.boundary_indices[i];
+          if (bitset_test(changed, u)) {
+            int val = labels[u];
+
+            // Path Compression
+            while (val > my_offset && val <= my_offset + local_n) {
+              int parent = labels[val - my_offset - 1];
+              if (parent < val)
+                val = parent;
+              else
+                break;
+            }
+
+            int start = g->remote_row_ptr[u];
+            int end = g->remote_row_ptr[u + 1];
+
+            int limit = end;
+            if (iterations <= sampling_rounds) {
+              if (start + sampling_k < end)
+                limit = start + sampling_k;
+            }
+            for (int j = start; j < limit; j++) {
+               if (prefetch_dist > 0 && j + prefetch_dist < limit) {
+                 __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
+                 __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
+               }
+
+              int neighbor = g->remote_col_idx[j];
+              int owner = g->remote_owners[j];
+
+              if (proc_counts[owner] + 2 > proc_caps[owner]) {
+                proc_caps[owner] *= 2;
+                int *new_buf = aligned_alloc_wrapper(proc_caps[owner] * sizeof(int));
+                memcpy(new_buf, proc_buffers[owner], proc_counts[owner] * sizeof(int));
+                free(proc_buffers[owner]);
+                proc_buffers[owner] = new_buf;
+              }
+              proc_buffers[owner][proc_counts[owner]++] = neighbor;
+              proc_buffers[owner][proc_counts[owner]++] = val;
+            }
+          }
+        }
     }
 
     // 3. Exchange
@@ -635,6 +770,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
   free(proc_counts);
   free(changed);
   free(next_changed);
+  free_tls_buffers(n_workers, size);
   cleanup_communication();
   return iterations;
 }
