@@ -7,13 +7,42 @@
 # ------------------------------------------------------------------------------
 
 # Compiler: Using Clang with OpenCilk support
-# Auto-locate OpenCilk: try 'cilk' command first (as requested), fallback to 'clang'
-CILK_PATH := $(shell which cilk 2>/dev/null)
-ifeq ($(CILK_PATH),)
-    CC = clang
+# Auto-locate OpenCilk:
+# 1. Check for local 'opencilk' folder in current directory (Project2/opencilk)
+# 2. Try 'cilk' command (if installed via package manager)
+# 3. Fallback to 'clang'
+LOCAL_CILK_CHECK := $(shell test -x ./opencilk/bin/clang && echo yes)
+
+ifeq ($(LOCAL_CILK_CHECK),yes)
+    # If local opencilk exists, use it
+    # Use abspath to ensure we get a clean absolute path even with relative symlinks
+    CILK_BASE := $(abspath ./opencilk)
+    
+    # CRITICAL: Use absolute path for CC so MPI wrapper finds it
+    CC := $(CILK_BASE)/bin/clang
+    
+    # Debug info
+    $(info [Config] Found local OpenCilk at: $(CILK_BASE))
+    $(info [Config] Setting CC to: $(CC))
+    
+    # ALSO UPDATE PATH for subshells so access to llvm-profdata etc. works
+    export PATH := $(CILK_BASE)/bin:$(PATH)
 else
-    CC = $(CILK_PATH)
+    # Fallback to system search
+    CILK_PATH := $(shell which cilk 2>/dev/null)
+    ifeq ($(CILK_PATH),)
+        CC = clang
+        $(warning [Config] OpenCilk not found locally or in PATH. Defaulting to 'clang'. This may fail on clusters if clang is missing.)
+    else
+        CC = $(CILK_PATH)
+        $(info [Config] Using system OpenCilk: $(CC))
+    endif
 endif
+
+# Force MPI wrappers to use our detected compiler
+export OMPI_CC=$(CC)
+export MPICH_CC=$(CC)
+export I_MPI_CC=$(CC)
 
 # Compilation Flags:
 # -fopencilk: Enable OpenCilk parallelism

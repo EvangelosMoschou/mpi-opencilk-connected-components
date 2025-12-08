@@ -2,8 +2,15 @@
 // But keep the base label propagation. It is asked for the assignment.
 #define _POSIX_C_SOURCE 200809L
 #include "bfs_mpi.h"
+#ifdef __opencilk
 #include <cilk/cilk.h>
 #include <cilk/cilk_api.h>
+#else
+#define cilk_for for
+#define cilk_spawn
+#define cilk_sync
+#endif
+
 #include <mpi.h>
 #include <stdint.h>
 #include <stdio.h>
