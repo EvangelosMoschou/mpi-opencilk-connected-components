@@ -74,12 +74,23 @@ for mat in "${MAT_FILES[@]}"; do
     echo "================================================================="
     
     # Arrays to store times
-    declare -a CILK_TIMES
+    CILK_TIMES=()
     
     # Cilk Runs
     echo "Running Cilk ($REPEATS repeats)..."
+    ALGO_DETECTED=""
     for i in $(seq 1 $REPEATS); do
         OUTPUT=$(BFS_ALGO=cilk "$MAIN_CILK" "$mat")
+        
+        # Capture algorithm selection from the first run
+        if [ -z "$ALGO_DETECTED" ]; then
+            ALGO_LINE=$(echo "$OUTPUT" | grep "Adaptive BFS:" || true)
+            if [ -n "$ALGO_LINE" ]; then
+                ALGO_DETECTED=$(echo "$ALGO_LINE" | sed -E 's/Adaptive BFS: (.*)/\1/')
+                echo "  Algorithm: $ALGO_DETECTED"
+            fi
+        fi
+
         TIME_LINE=$(echo "$OUTPUT" | grep "Coloring CC:" || true)
         if [ -n "$TIME_LINE" ]; then
             TIME=$(echo "$TIME_LINE" | sed -E 's/.*time=([0-9.]+) s.*/\1/')

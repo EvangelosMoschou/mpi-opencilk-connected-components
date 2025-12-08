@@ -47,7 +47,7 @@ int main(int argc, char *argv[]) {
   /* Allocate space for component labels - size based on number of rows, not
    * nonzeros */
   int *labels = NULL;
-  if (posix_memalign((void**)&labels, 64, (size_t)rows * sizeof(int)) != 0) {
+  if (posix_memalign((void **)&labels, 64, (size_t)rows * sizeof(int)) != 0) {
     fprintf(stderr, "OOM allocating labels\n");
     clean_csr_vectors(csr);
     return 3;
@@ -62,6 +62,10 @@ int main(int argc, char *argv[]) {
 
   double t1 = now_seconds();
 
+  // Optimization: Free the graph immediately after BFS to save memory
+  // before the count_components phase (which allocates 'seen' array).
+  clean_csr_vectors(csr);
+
   /* Count and display results */
   int comps = count_components(rows, labels);
   printf("Coloring CC: iterations=%d time=%.6f s components=%d\n", iters,
@@ -73,7 +77,6 @@ int main(int argc, char *argv[]) {
 
   /* Clean up allocated memory */
   free(labels);
-  clean_csr_vectors(csr);
 
   return 0;
 }

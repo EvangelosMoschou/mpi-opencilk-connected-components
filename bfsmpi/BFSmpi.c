@@ -2,7 +2,7 @@
 // But keep the base label propagation. It is asked for the assignment.
 #define _POSIX_C_SOURCE 200809L
 #include "bfs_mpi.h"
-#ifdef __opencilk
+#if defined(__opencilk) || defined(__cilk) || defined(__opencilk__)
 #include <cilk/cilk.h>
 #include <cilk/cilk_api.h>
 #else
@@ -598,7 +598,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
     for (int p = 0; p < size; p++) {
       int count = comm.recv_counts[p];
       int *buf = comm.recv_buf + comm.recv_displs[p];
-      for (int k = 0; k < count; k += 2) {
+      cilk_for(int k = 0; k < count; k += 2) {
         int target = buf[k];
         int val = buf[k + 1];
         if (target >= my_offset && target < my_offset + local_n) {
