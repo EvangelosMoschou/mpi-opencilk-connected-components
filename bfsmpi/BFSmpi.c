@@ -57,13 +57,23 @@ static inline void bitset_clear(uint64_t *b, size_t num_words) {
 }
 
 // Helper to find owner of a global vertex
-static inline int get_owner(int global_id, int base, int cutoff,
-                            int base_plus_1) {
-  if (global_id < cutoff) {
-    return global_id / base_plus_1;
-  } else {
-    return (cutoff / base_plus_1) + (global_id - cutoff) / base;
+// Helper to find owner of a global vertex
+// Updated to use binary search on vtx_dist for EDGE-BALANCED PARTITIONS
+static inline int get_owner(int global_id, const MPI_Graph *g) {
+  int l = 0, r = g->size - 1;
+  while (l <= r) {
+      int m = l + (r - l) / 2;
+      // Start of rank m?
+      if (global_id >= g->vtx_dist[m] && global_id < g->vtx_dist[m+1]) {
+          return m;
+      }
+      if (global_id < g->vtx_dist[m]) {
+          r = m - 1;
+      } else {
+          l = m + 1;
+      }
   }
+  return g->size - 1; // Fallback (should be covered)
 }
 
 typedef struct {
@@ -84,10 +94,7 @@ static CommInfo comm;
 
 void setup_communication(MPI_Graph *g) {
   // Precompute distribution parameters
-  int base = g->global_n / g->size;
-  int remainder = g->global_n % g->size;
-  int cutoff = remainder * (base + 1);
-  int base_plus_1 = base + 1;
+
 
   // 1. Count internal and remote edges
   g->internal_nnz = 0;
@@ -147,10 +154,11 @@ void setup_communication(MPI_Graph *g) {
         g->remote_col_idx[remote_pos] = neighbor;
         // Compute owner
         int owner;
-        if (neighbor < cutoff) {
-          owner = neighbor / base_plus_1;
+        if (neighbor < 0) { // Should not happen with unsigned/int
+          // Handle error or ignore
+          owner = 0;
         } else {
-          owner = (cutoff / base_plus_1) + (neighbor - cutoff) / base;
+          owner = get_owner(neighbor, g);
         }
         g->remote_owners[remote_pos] = owner;
         remote_pos++;
@@ -206,11 +214,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
   comm.send_buf = __builtin_assume_aligned(comm.send_buf, 64);
   comm.recv_buf = __builtin_assume_aligned(comm.recv_buf, 64);
 
-  // Precompute distribution parameters for O(1) owner lookup
-  int base = g->global_n / size;
-  int remainder = g->global_n % size;
-  int cutoff = remainder * (base + 1);
-  int base_plus_1 = base + 1;
+
 
   // Initialize labels (1-based)
   cilk_for(int i = 0; i < local_n; i++) { labels[i] = my_offset + i + 1; }
@@ -732,5 +736,40 @@ int mpi_init_graph(MPI_Graph *g, int n, const int *row_ptr,
     free(displs);
   }
 
+  return 0;
+}
+
+int mpi_init_graph_distributed(MPI_Graph *g, int global_n, int local_n, int *local_row_ptr, int *local_col_idx, int local_nnz, const int *vtx_dist) {
+  MPI_Comm_rank(MPI_COMM_WORLD, &g->rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &g->size);
+  g->global_n = global_n;
+  g->local_n = local_n;
+  g->local_nnz = local_nnz;
+  
+  // Take ownership of the pointers
+  g->local_row_ptr = local_row_ptr;
+  g->local_col_idx = local_col_idx;
+  
+  // Copy vtx_dist
+  g->vtx_dist = malloc((g->size + 1) * sizeof(int));
+  if(!g->vtx_dist) {
+      perror("Failed to alloc vtx_dist");
+      MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  memcpy(g->vtx_dist, vtx_dist, (g->size + 1) * sizeof(int));
+
+  // Sanity check
+  int expected_n = g->vtx_dist[g->rank + 1] - g->vtx_dist[g->rank];
+  if (expected_n != local_n) {
+      fprintf(stderr, "Rank %d: Partition mismatch. Expected %d, got %d. GlobalN=%d\n", 
+              g->rank, expected_n, local_n, global_n);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  
+  g->local_labels = aligned_alloc_wrapper(g->local_n * sizeof(int));
+  if(!g->local_labels) {
+      perror("Failed to alloc labels");
+      MPI_Abort(MPI_COMM_WORLD, 1);
+  }
   return 0;
 }

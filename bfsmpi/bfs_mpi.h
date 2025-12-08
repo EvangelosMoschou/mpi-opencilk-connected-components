@@ -32,6 +32,8 @@ void compute_vertex_distribution(int n, int nprocs, int *vtx_dist);
 // row_ptr and col_idx are only valid on rank 0
 int mpi_init_graph(MPI_Graph *g, int n, const int *row_ptr, const int *col_idx);
 
+int mpi_init_graph_distributed(MPI_Graph *g, int global_n, int local_n, int *local_row_ptr, int *local_col_idx, int local_nnz, const int *vtx_dist);
+
 // Distributed connected components algorithm
 int mpi_coloring_cc(MPI_Graph *g);
 

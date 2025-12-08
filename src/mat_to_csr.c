@@ -540,3 +540,128 @@ CSR_info mat_to_csr(char *file_name) {
 
   return csr;
 }
+
+// Compute edge-balanced partition
+// Returns an array of size (size + 1) containing start row for each rank
+// vtx_dist[0] = 0, vtx_dist[size] = N
+int *compute_balanced_partition(const char *fname, int size, int *out_n) {
+  FILE *f = fopen(fname, "rb");
+  if (!f) return NULL;
+
+  int64_t global_nrows = 0, global_nz = 0;
+  if (fread(&global_nrows, sizeof(int64_t), 1, f) != 1 ||
+      fread(&global_nz, sizeof(int64_t), 1, f) != 1) {
+    fclose(f);
+    return NULL;
+  }
+  
+  if (out_n) *out_n = (int)global_nrows;
+  
+  int *row_ptr = malloc(((int)global_nrows + 1) * sizeof(int));
+  if (!row_ptr) {
+      fclose(f);
+      return NULL;
+  }
+  
+  fseek(f, 16, SEEK_SET);
+  if (fread(row_ptr, sizeof(int), (int)global_nrows + 1, f) != (size_t)(global_nrows + 1)) {
+      free(row_ptr);
+      fclose(f);
+      return NULL;
+  }
+  fclose(f);
+  
+  int *vtx_dist = malloc((size + 1) * sizeof(int));
+  vtx_dist[0] = 0;
+  vtx_dist[size] = (int)global_nrows;
+  
+  long long total_nz = (long long)row_ptr[global_nrows];
+  long long target_nz = total_nz / size;
+  
+  int current_rank = 1;
+  long long current_target = target_nz;
+  
+  for (int i = 0; i < global_nrows; i++) {
+      if (current_rank >= size) break;
+      if (row_ptr[i] >= current_target) {
+          vtx_dist[current_rank] = i;
+          current_rank++;
+          current_target += target_nz;
+      }
+  }
+  while (current_rank < size) {
+      vtx_dist[current_rank] = (int)global_nrows;
+      current_rank++;
+  }
+  
+  free(row_ptr);
+  return vtx_dist;
+}
+
+// Read only a part of the CSR binary file for distributed loading
+CSR_info read_csr_bin_part(const char *fname, int start_row, int end_row, int *out_global_n) {
+  CSR_info csr = {0, 0, NULL, NULL};
+  FILE *f = fopen(fname, "rb");
+  if (!f) return csr;
+
+  int64_t global_nrows = 0, global_nz = 0;
+  if (fread(&global_nrows, sizeof(int64_t), 1, f) != 1 ||
+      fread(&global_nz, sizeof(int64_t), 1, f) != 1) {
+    fclose(f);
+    return csr;
+  }
+  
+  if (out_global_n) *out_global_n = (int)global_nrows;
+
+  int my_start_row = start_row;
+  int my_end_row = end_row;
+  int my_nrows = my_end_row - my_start_row;
+
+  csr.nrows = my_nrows;
+  // Use malloc for safety instead of aligned_alloc
+  csr.row_ptr = malloc((my_nrows + 1) * sizeof(int));
+  if (!csr.row_ptr) {
+      fclose(f);
+      return csr;
+  }
+
+  long row_ptr_offset = 16 + (long)my_start_row * sizeof(int);
+  
+  fseek(f, row_ptr_offset, SEEK_SET);
+  if (fread(csr.row_ptr, sizeof(int), my_nrows + 1, f) != (size_t)(my_nrows + 1)) {
+      fclose(f);
+      free(csr.row_ptr);
+      return (CSR_info){0};
+  }
+  
+  int start_edge_idx = csr.row_ptr[0];
+  int end_edge_idx = csr.row_ptr[my_nrows];
+  int my_nz = end_edge_idx - start_edge_idx;
+  csr.nzcount = my_nz;
+
+  for (int i = 0; i <= my_nrows; i++) {
+      csr.row_ptr[i] -= start_edge_idx;
+  }
+
+  // Use malloc for column indices as well
+  csr.col_idx = malloc((size_t)my_nz * sizeof(int));
+  if (!csr.col_idx) {
+      fclose(f);
+      free(csr.row_ptr);
+      return (CSR_info){0};
+  }
+
+  long col_idx_start = 16 + (long)(global_nrows + 1) * sizeof(int);
+  long my_col_offset = col_idx_start + (long)start_edge_idx * sizeof(int);
+
+  fseek(f, my_col_offset, SEEK_SET);
+  if (fread(csr.col_idx, sizeof(int), my_nz, f) != (size_t)my_nz) {
+      fclose(f);
+      free(csr.row_ptr);
+      free(csr.col_idx);
+      return (CSR_info){0};
+  }
+
+  fclose(f);
+  return csr;
+}
