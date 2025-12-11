@@ -99,7 +99,8 @@ $(OBJ_MPI)/%.o: %.c
 
 # Clean
 clean:
-	rm -rf $(OBJ_DIR) $(BIN_DIR) logs/*.profraw
+	rm -rf $(OBJ_DIR) $(BIN_DIR) logs/*.profraw logs/*.profdata
+	rm -rf obj_mpi obj_cilk # Remove legacy build directories
 
 # ------------------------------------------------------------------------------
 # Profile-Guided Optimization (PGO)
