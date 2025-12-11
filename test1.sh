@@ -10,8 +10,13 @@
 
 
 
+# Load modules in dependency order
+# OpenCilk v2.0 requires gcc/9.4.0
+module load gcc/9.4.0-eewq4j6
 module load OpenCilk/v2.0
-module load gcc/13.2.0-iqpfkya openmpi/5.0.3-rhzbeym
+
+# Load other dependencies (may swap GCC runtime but hopefully compatible)
+module load openmpi/5.0.3-rhzbeym
 module load matio/1.5.26-xzs7hxf
 
 

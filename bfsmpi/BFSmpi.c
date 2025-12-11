@@ -62,16 +62,16 @@ static inline void bitset_clear(uint64_t *b, size_t num_words) {
 static inline int get_owner(int global_id, const MPI_Graph *g) {
   int l = 0, r = g->size - 1;
   while (l <= r) {
-      int m = l + (r - l) / 2;
-      // Start of rank m?
-      if (global_id >= g->vtx_dist[m] && global_id < g->vtx_dist[m+1]) {
-          return m;
-      }
-      if (global_id < g->vtx_dist[m]) {
-          r = m - 1;
-      } else {
-          l = m + 1;
-      }
+    int m = l + (r - l) / 2;
+    // Start of rank m?
+    if (global_id >= g->vtx_dist[m] && global_id < g->vtx_dist[m + 1]) {
+      return m;
+    }
+    if (global_id < g->vtx_dist[m]) {
+      r = m - 1;
+    } else {
+      l = m + 1;
+    }
   }
   return g->size - 1; // Fallback (should be covered)
 }
@@ -105,11 +105,11 @@ static int n_workers = 1;
 void init_tls_buffers(int workers, int size) {
   n_workers = workers;
   tls_buffers = malloc(workers * sizeof(TLS_Buffer));
-  for(int w=0; w<workers; w++) {
-    tls_buffers[w].buffers = malloc(size * sizeof(int*));
+  for (int w = 0; w < workers; w++) {
+    tls_buffers[w].buffers = malloc(size * sizeof(int *));
     tls_buffers[w].counts = calloc(size, sizeof(int));
     tls_buffers[w].caps = malloc(size * sizeof(int));
-    for(int p=0; p<size; p++) {
+    for (int p = 0; p < size; p++) {
       tls_buffers[w].caps[p] = 4096; // Initial small cap
       tls_buffers[w].buffers[p] = malloc(tls_buffers[w].caps[p] * sizeof(int));
     }
@@ -117,9 +117,10 @@ void init_tls_buffers(int workers, int size) {
 }
 
 void free_tls_buffers(int workers, int size) {
-  if(!tls_buffers) return;
-  for(int w=0; w<workers; w++) {
-    for(int p=0; p<size; p++) {
+  if (!tls_buffers)
+    return;
+  for (int w = 0; w < workers; w++) {
+    for (int p = 0; p < size; p++) {
       free(tls_buffers[w].buffers[p]);
     }
     free(tls_buffers[w].buffers);
@@ -132,7 +133,6 @@ void free_tls_buffers(int workers, int size) {
 
 void setup_communication(MPI_Graph *g) {
   // Precompute distribution parameters
-
 
   // 1. Count internal and remote edges
   g->internal_nnz = 0;
@@ -252,8 +252,6 @@ int mpi_coloring_cc(MPI_Graph *g) {
   comm.send_buf = __builtin_assume_aligned(comm.send_buf, 64);
   comm.recv_buf = __builtin_assume_aligned(comm.recv_buf, 64);
 
-
-
   // Initialize labels (1-based)
   cilk_for(int i = 0; i < local_n; i++) { labels[i] = my_offset + i + 1; }
 
@@ -305,17 +303,18 @@ int mpi_coloring_cc(MPI_Graph *g) {
     if (g->rank == 0) {
       printf("MPI BFS Config: Sampling Rounds=%d, K=%d, Prefetch Dist=%d, Zero "
              "Planting=%d, Hybrid Packing=%d\n",
-             sampling_rounds, sampling_k, prefetch_dist, zero_planting, use_hybrid_packing);
+             sampling_rounds, sampling_k, prefetch_dist, zero_planting,
+             use_hybrid_packing);
     }
     config_loaded = 1;
   }
 
   // Init Thread Local Storage if Hybrid Packing is enabled
   int workers = 1;
-  #if defined(__opencilk) || defined(__cilk) || defined(__opencilk__)
-    workers = __cilkrts_get_nworkers();
-  #endif
-  
+#if defined(__opencilk) || defined(__cilk) || defined(__opencilk__)
+  workers = __cilkrts_get_nworkers();
+#endif
+
   if (use_hybrid_packing && workers > 1) {
     init_tls_buffers(workers, size);
   }
@@ -553,136 +552,141 @@ int mpi_coloring_cc(MPI_Graph *g) {
 
     // 2. Pack Messages
     if (use_hybrid_packing && n_workers > 1) {
-        // Parallel Pack Messages
-        // Clear TLS counts
-        cilk_for(int w = 0; w < n_workers; w++) {
-          memset(tls_buffers[w].counts, 0, size * sizeof(int));
-        }
+      // Parallel Pack Messages
+      // Clear TLS counts
+      cilk_for(int w = 0; w < n_workers; w++) {
+        memset(tls_buffers[w].counts, 0, size * sizeof(int));
+      }
 
-        cilk_for(int i = 0; i < comm.boundary_count; i++) {
-          int tid = 0;
-          #if defined(__opencilk) || defined(__cilk) || defined(__opencilk__)
-            tid = __cilkrts_get_worker_number();
-          #endif
-          
-          int u = comm.boundary_indices[i];
-          if (bitset_test(changed, u)) {
-            int val = labels[u];
+      cilk_for(int i = 0; i < comm.boundary_count; i++) {
+        int tid = 0;
+#if defined(__opencilk) || defined(__cilk) || defined(__opencilk__)
+        tid = __cilkrts_get_worker_number();
+#endif
 
-            // Path Compression
-            while (val > my_offset && val <= my_offset + local_n) {
-              int parent = labels[val - my_offset - 1];
-              if (parent < val)
-                val = parent;
-              else
-                break;
+        int u = comm.boundary_indices[i];
+        if (bitset_test(changed, u)) {
+          int val = labels[u];
+
+          // Path Compression
+          while (val > my_offset && val <= my_offset + local_n) {
+            int parent = labels[val - my_offset - 1];
+            if (parent < val)
+              val = parent;
+            else
+              break;
+          }
+
+          int start = g->remote_row_ptr[u];
+          int end = g->remote_row_ptr[u + 1];
+
+          int limit = end;
+          if (iterations <= sampling_rounds) {
+            if (start + sampling_k < end)
+              limit = start + sampling_k;
+          }
+          for (int j = start; j < limit; j++) {
+            // Prefetching
+            if (prefetch_dist > 0 && j + prefetch_dist < limit) {
+              __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
+              __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
             }
 
-            int start = g->remote_row_ptr[u];
-            int end = g->remote_row_ptr[u + 1];
+            int neighbor = g->remote_col_idx[j];
+            int owner = g->remote_owners[j];
 
-            int limit = end;
-            if (iterations <= sampling_rounds) {
-              if (start + sampling_k < end)
-                limit = start + sampling_k;
+            // Append to TLS buffer
+            int cnt = tls_buffers[tid].counts[owner];
+            if (cnt + 2 > tls_buffers[tid].caps[owner]) {
+              tls_buffers[tid].caps[owner] *= 2;
+              // Simple realloc equivalent
+              int *old_b = tls_buffers[tid].buffers[owner];
+              int *new_b = malloc(tls_buffers[tid].caps[owner] * sizeof(int));
+              memcpy(new_b, old_b, cnt * sizeof(int));
+              free(old_b);
+              tls_buffers[tid].buffers[owner] = new_b;
             }
-            for (int j = start; j < limit; j++) {
-               // Prefetching
-               if (prefetch_dist > 0 && j + prefetch_dist < limit) {
-                 __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
-                 __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
-               }
-
-              int neighbor = g->remote_col_idx[j];
-              int owner = g->remote_owners[j];
-              
-              // Append to TLS buffer
-              int cnt = tls_buffers[tid].counts[owner];
-              if (cnt + 2 > tls_buffers[tid].caps[owner]) {
-                 tls_buffers[tid].caps[owner] *= 2;
-                 // Simple realloc equivalent
-                 int *old_b = tls_buffers[tid].buffers[owner];
-                 int *new_b = malloc(tls_buffers[tid].caps[owner] * sizeof(int)); 
-                 memcpy(new_b, old_b, cnt * sizeof(int));
-                 free(old_b);
-                 tls_buffers[tid].buffers[owner] = new_b;
-              }
-              tls_buffers[tid].buffers[owner][cnt] = neighbor;
-              tls_buffers[tid].buffers[owner][cnt+1] = val;
-              tls_buffers[tid].counts[owner] = cnt + 2;
-            }
+            tls_buffers[tid].buffers[owner][cnt] = neighbor;
+            tls_buffers[tid].buffers[owner][cnt + 1] = val;
+            tls_buffers[tid].counts[owner] = cnt + 2;
           }
         }
+      }
 
-        // Merge TLS buffers into main proc_buffers
-        cilk_for(int p = 0; p < size; p++) {
-          int total = 0;
-          for(int w=0; w<n_workers; w++) total += tls_buffers[w].counts[p];
-          
-          proc_counts[p] = total;
-          if (total > proc_caps[p]) {
-            while(proc_caps[p] < total) proc_caps[p] *= 2;
-            free(proc_buffers[p]);
-            proc_buffers[p] = aligned_alloc_wrapper(proc_caps[p] * sizeof(int));
-          }
-          
-          int offset = 0;
-          for(int w=0; w<n_workers; w++) {
-            int c = tls_buffers[w].counts[p];
-            if(c > 0) {
-              memcpy(proc_buffers[p] + offset, tls_buffers[w].buffers[p], c * sizeof(int));
-              offset += c;
-            }
+      // Merge TLS buffers into main proc_buffers
+      cilk_for(int p = 0; p < size; p++) {
+        int total = 0;
+        for (int w = 0; w < n_workers; w++)
+          total += tls_buffers[w].counts[p];
+
+        proc_counts[p] = total;
+        if (total > proc_caps[p]) {
+          while (proc_caps[p] < total)
+            proc_caps[p] *= 2;
+          free(proc_buffers[p]);
+          proc_buffers[p] = aligned_alloc_wrapper(proc_caps[p] * sizeof(int));
+        }
+
+        int offset = 0;
+        for (int w = 0; w < n_workers; w++) {
+          int c = tls_buffers[w].counts[p];
+          if (c > 0) {
+            memcpy(proc_buffers[p] + offset, tls_buffers[w].buffers[p],
+                   c * sizeof(int));
+            offset += c;
           }
         }
+      }
     } else {
-        // Serial Pack Messages
-        for (int p = 0; p < size; p++)
-          proc_counts[p] = 0;
+      // Serial Pack Messages
+      for (int p = 0; p < size; p++)
+        proc_counts[p] = 0;
 
-        for (int i = 0; i < comm.boundary_count; i++) {
-          int u = comm.boundary_indices[i];
-          if (bitset_test(changed, u)) {
-            int val = labels[u];
+      for (int i = 0; i < comm.boundary_count; i++) {
+        int u = comm.boundary_indices[i];
+        if (bitset_test(changed, u)) {
+          int val = labels[u];
 
-            // Path Compression
-            while (val > my_offset && val <= my_offset + local_n) {
-              int parent = labels[val - my_offset - 1];
-              if (parent < val)
-                val = parent;
-              else
-                break;
+          // Path Compression
+          while (val > my_offset && val <= my_offset + local_n) {
+            int parent = labels[val - my_offset - 1];
+            if (parent < val)
+              val = parent;
+            else
+              break;
+          }
+
+          int start = g->remote_row_ptr[u];
+          int end = g->remote_row_ptr[u + 1];
+
+          int limit = end;
+          if (iterations <= sampling_rounds) {
+            if (start + sampling_k < end)
+              limit = start + sampling_k;
+          }
+          for (int j = start; j < limit; j++) {
+            if (prefetch_dist > 0 && j + prefetch_dist < limit) {
+              __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
+              __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
             }
 
-            int start = g->remote_row_ptr[u];
-            int end = g->remote_row_ptr[u + 1];
+            int neighbor = g->remote_col_idx[j];
+            int owner = g->remote_owners[j];
 
-            int limit = end;
-            if (iterations <= sampling_rounds) {
-              if (start + sampling_k < end)
-                limit = start + sampling_k;
+            if (proc_counts[owner] + 2 > proc_caps[owner]) {
+              proc_caps[owner] *= 2;
+              int *new_buf =
+                  aligned_alloc_wrapper(proc_caps[owner] * sizeof(int));
+              memcpy(new_buf, proc_buffers[owner],
+                     proc_counts[owner] * sizeof(int));
+              free(proc_buffers[owner]);
+              proc_buffers[owner] = new_buf;
             }
-            for (int j = start; j < limit; j++) {
-               if (prefetch_dist > 0 && j + prefetch_dist < limit) {
-                 __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
-                 __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
-               }
-
-              int neighbor = g->remote_col_idx[j];
-              int owner = g->remote_owners[j];
-
-              if (proc_counts[owner] + 2 > proc_caps[owner]) {
-                proc_caps[owner] *= 2;
-                int *new_buf = aligned_alloc_wrapper(proc_caps[owner] * sizeof(int));
-                memcpy(new_buf, proc_buffers[owner], proc_counts[owner] * sizeof(int));
-                free(proc_buffers[owner]);
-                proc_buffers[owner] = new_buf;
-              }
-              proc_buffers[owner][proc_counts[owner]++] = neighbor;
-              proc_buffers[owner][proc_counts[owner]++] = val;
-            }
+            proc_buffers[owner][proc_counts[owner]++] = neighbor;
+            proc_buffers[owner][proc_counts[owner]++] = val;
           }
         }
+      }
     }
 
     // 3. Exchange
@@ -875,37 +879,40 @@ int mpi_init_graph(MPI_Graph *g, int n, const int *row_ptr,
   return 0;
 }
 
-int mpi_init_graph_distributed(MPI_Graph *g, int global_n, int local_n, int *local_row_ptr, int *local_col_idx, int local_nnz, const int *vtx_dist) {
+int mpi_init_graph_distributed(MPI_Graph *g, int global_n, int local_n,
+                               int *local_row_ptr, int *local_col_idx,
+                               int local_nnz, const int *vtx_dist) {
   MPI_Comm_rank(MPI_COMM_WORLD, &g->rank);
   MPI_Comm_size(MPI_COMM_WORLD, &g->size);
   g->global_n = global_n;
   g->local_n = local_n;
   g->local_nnz = local_nnz;
-  
+
   // Take ownership of the pointers
   g->local_row_ptr = local_row_ptr;
   g->local_col_idx = local_col_idx;
-  
+
   // Copy vtx_dist
   g->vtx_dist = malloc((g->size + 1) * sizeof(int));
-  if(!g->vtx_dist) {
-      perror("Failed to alloc vtx_dist");
-      MPI_Abort(MPI_COMM_WORLD, 1);
+  if (!g->vtx_dist) {
+    perror("Failed to alloc vtx_dist");
+    MPI_Abort(MPI_COMM_WORLD, 1);
   }
   memcpy(g->vtx_dist, vtx_dist, (g->size + 1) * sizeof(int));
 
   // Sanity check
   int expected_n = g->vtx_dist[g->rank + 1] - g->vtx_dist[g->rank];
   if (expected_n != local_n) {
-      fprintf(stderr, "Rank %d: Partition mismatch. Expected %d, got %d. GlobalN=%d\n", 
-              g->rank, expected_n, local_n, global_n);
-      MPI_Abort(MPI_COMM_WORLD, 1);
+    fprintf(stderr,
+            "Rank %d: Partition mismatch. Expected %d, got %d. GlobalN=%d\n",
+            g->rank, expected_n, local_n, global_n);
+    MPI_Abort(MPI_COMM_WORLD, 1);
   }
-  
+
   g->local_labels = aligned_alloc_wrapper(g->local_n * sizeof(int));
-  if(!g->local_labels) {
-      perror("Failed to alloc labels");
-      MPI_Abort(MPI_COMM_WORLD, 1);
+  if (!g->local_labels) {
+    perror("Failed to alloc labels");
+    MPI_Abort(MPI_COMM_WORLD, 1);
   }
   return 0;
 }
