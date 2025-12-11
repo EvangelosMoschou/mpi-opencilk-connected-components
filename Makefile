@@ -40,11 +40,14 @@ CFLAGS_COMMON  = -fopencilk -O3 -march=native -flto -Wall -I. -Isrc
 LDFLAGS_COMMON = -lmatio -fopencilk -flto -fuse-ld=lld
 
 # Cilk-specific
-CFLAGS_CILK    = $(CFLAGS_COMMON) -pthread -Ibfscilk -fprofile-instr-use=logs/bfscilk.profdata
+# Only use PGO if the profile data exists
+PGO_CILK_FLAG = $(if $(wildcard logs/bfscilk.profdata),-fprofile-instr-use=logs/bfscilk.profdata,)
+CFLAGS_CILK    = $(CFLAGS_COMMON) -pthread -Ibfscilk $(PGO_CILK_FLAG)
 LDFLAGS_CILK   = $(LDFLAGS_COMMON) -pthread
 
 # MPI-specific
-CFLAGS_MPI     = $(CFLAGS_COMMON) -Ibfsmpi -fprofile-instr-use=logs/bfsmpi.profdata
+PGO_MPI_FLAG = $(if $(wildcard logs/bfsmpi.profdata),-fprofile-instr-use=logs/bfsmpi.profdata,)
+CFLAGS_MPI     = $(CFLAGS_COMMON) -Ibfsmpi $(PGO_MPI_FLAG)
 LDFLAGS_MPI    = $(LDFLAGS_COMMON)
 
 # ------------------------------------------------------------------------------
