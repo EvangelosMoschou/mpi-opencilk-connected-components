@@ -12,8 +12,9 @@
 
 # Load modules in dependency order
 # Load modules
-# We need GCC for dependencies (OpenCilk often needs a specific libstdc++ or runtime)
-module load gcc/9.4.0-eewq4j6
+# We need GCC for dependencies. OpenCilk v2.0 is based on LLVM 14.
+# A newer GCC is generally fine and often preferred for better standard lib support.
+module load gcc/13.2.0-iqpfkya
 # module load OpenCilk/v2.0 # Using local opencilk folder instead
 
 # Load other dependencies
@@ -38,6 +39,7 @@ module load matio/1.5.26-xzs7hxf
 
 # Compile the project first (since we ran make clean)
 echo "Building project..."
+make clean
 make mpi
 
 # Detect Matrix File (similar to our other scripts)
