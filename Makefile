@@ -36,8 +36,12 @@ export I_MPI_CC=$(CC)
 # ------------------------------------------------------------------------------
 
 # Common Flags
-CFLAGS_COMMON  = -fopencilk -O3 -march=native -flto -Wall -I. -Isrc
-LDFLAGS_COMMON = -lmatio -fopencilk -flto -fuse-ld=lld
+# Use pkg-config for matio if available, otherwise fallback to -lmatio
+MATIO_FLAGS := $(shell pkg-config --cflags matio 2>/dev/null)
+MATIO_LIBS  := $(shell pkg-config --libs matio 2>/dev/null || echo "-lmatio")
+
+CFLAGS_COMMON  = -fopencilk -O3 -march=native -flto -Wall -Wno-deprecated-declarations -I. -Isrc $(MATIO_FLAGS)
+LDFLAGS_COMMON = $(MATIO_LIBS) -fopencilk -flto -fuse-ld=lld
 
 # Cilk-specific
 # Only use PGO if the profile data exists
