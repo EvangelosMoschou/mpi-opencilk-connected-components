@@ -3,11 +3,34 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-MATRIX="${1:-Mat file/com-LiveJournal.mat}"
+# Auto-detect matrix if not provided
+if [ -z "${1:-}" ]; then
+    # Try finding in specific folders first
+    DETECTED_MAT=$(find "$PROJECT_ROOT/Mat file" -name "*.mat" | head -n 1)
+    if [ -z "$DETECTED_MAT" ]; then
+        # Try current directory
+        DETECTED_MAT=$(find "$PROJECT_ROOT" -maxdepth 1 -name "*.mat" | head -n 1)
+    fi
+    
+    if [ -n "$DETECTED_MAT" ]; then
+        echo "Auto-detected matrix: $DETECTED_MAT"
+        MATRIX="$DETECTED_MAT"
+    else
+        echo "Error: No .mat file provided and none found in 'Mat file/' or project root."
+        exit 1
+    fi
+else
+    MATRIX="$1"
+fi
 
 # Resolve absolute path for MATRIX
 if [[ "$MATRIX" != /* ]]; then
   MATRIX="$PROJECT_ROOT/$MATRIX"
+fi
+
+if [ ! -f "$MATRIX" ]; then
+    echo "Error: Matrix file not found at $MATRIX"
+    exit 1
 fi
 
 # 1. Detect Resources
@@ -93,7 +116,7 @@ for cfg in "${CONFIGS[@]}"; do
     
     for i in {1..3}; do
         # Run benchmark
-        OUTPUT=$(mpirun --oversubscribe -np "$p" -x CILK_NWORKERS="$w" ./bin/mpi/main "$MATRIX")
+        OUTPUT=$(mpirun --oversubscribe -np "$p" -x CILK_NWORKERS="$w" ./bin/mpi/main "$MATRIX" 2>&1)
         
         # Parse time: "MPI CC: procs=... time=0.749078 s ..."
         # We use grep and awk to extract the float value
@@ -101,6 +124,9 @@ for cfg in "${CONFIGS[@]}"; do
         
         if [ -z "$TIME" ]; then
              echo "      Run $i: Failed to parse time."
+             echo "      --- Output Head ---"
+             echo "$OUTPUT" | head -n 10
+             echo "      -------------------"
              continue
         fi
         

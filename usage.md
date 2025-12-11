@@ -83,10 +83,26 @@ mpirun -np <NUM_PROCS> -x CILK_NWORKERS=<NUM_WORKERS> ./bin/mpi/main <MATRIX_FIL
     mpirun -np 1 -x CILK_NWORKERS=16 ./bin/mpi/main "Mat file/com-LiveJournal.mat"
     ```
 
-*   **Hybrid (4 processes, 4 threads each):**
-    ```bash
     mpirun -np 4 -x CILK_NWORKERS=4 ./bin/mpi/main "Mat file/com-LiveJournal.mat"
     ```
+
+### Advanced Hybrid Execution (Optimized)
+To fully utilize modern multi-core clusters, use the Distributed Loading and Hybrid Packing extensions.
+
+1.  **Enable Distributed Loading (`BFS_DISTRIBUTED=1`)**:
+    Reduces memory pressure on Rank 0 by letting every node load its own chunk of the graph.
+    
+2.  **Enable Parallel Packing (`BFS_HYBRID_PACKING=1`)**:
+    Allows all threads within a process to pack MPI messages concurrently.
+
+3.  **Unbind Threads (`--bind-to none`)**:
+    Crucial for OpenCilk threads to roam freely across cores when running inside MPI.
+
+**Full Command:**
+```bash
+BFS_DISTRIBUTED=1 BFS_HYBRID_PACKING=1 CILK_NWORKERS=4 \
+mpirun -np 4 --bind-to none ./bin/mpi/main "Mat file/kmer_V1r.mat"
+```
 
 ---
 

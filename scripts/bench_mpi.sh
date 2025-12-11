@@ -7,10 +7,34 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 LOGFILE="$PROJECT_ROOT/logs/benchmark_mpi.log"
 BIN_MPI="$PROJECT_ROOT/bin/mpi/main"
 
-MATRIX="$1"
+# Auto-detect matrix if not provided
+if [ -z "${1:-}" ]; then
+    # Try finding in specific folders first
+    DETECTED_MAT=$(find "$PROJECT_ROOT/Mat file" -name "*.mat" | head -n 1)
+    if [ -z "$DETECTED_MAT" ]; then
+        # Try current directory
+        DETECTED_MAT=$(find "$PROJECT_ROOT" -maxdepth 1 -name "*.mat" | head -n 1)
+    fi
+    
+    if [ -n "$DETECTED_MAT" ]; then
+        echo "Auto-detected matrix: $DETECTED_MAT"
+        MATRIX="$DETECTED_MAT"
+    else
+        echo "Error: No .mat file provided and none found in 'Mat file/' or project root."
+        exit 1
+    fi
+else
+    MATRIX="$1"
+fi
+
 # Resolve absolute path for MATRIX if it's relative
 if [[ "$MATRIX" != /* ]]; then
   MATRIX="$(pwd)/$MATRIX"
+fi
+
+if [ ! -f "$MATRIX" ]; then
+    echo "Error: Matrix file not found at $MATRIX"
+    exit 1
 fi
 
 REPEATS=${2:-3}

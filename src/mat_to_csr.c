@@ -395,6 +395,10 @@ CSR_info mat_to_csr(char *file_name) {
 
   free(row_counts);
   free(pos);
+  
+  // Free MATIO memory immediately to reduce peak usage
+  Mat_VarFree(projectvar);
+  Mat_Close(matfp);
 
   // Sort rows to enable binary search and efficient processing
   cilk_for(int i = 0; i < numrows; i++) {
@@ -516,8 +520,7 @@ CSR_info mat_to_csr(char *file_name) {
   }
 
   // Cleanup dynamically allocated used vectors
-  Mat_VarFree(projectvar);
-  Mat_Close(matfp);
+
 
   /*
   //Part for deleting the original .mat file from repo

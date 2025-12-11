@@ -3,183 +3,149 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# Cilk (Sequential/Shared Memory) Configuration
+# Configuration & Compiler Detection
 # ------------------------------------------------------------------------------
 
-# Compiler: Using Clang with OpenCilk support
-# Auto-locate OpenCilk:
-# 1. Check for local 'opencilk' folder in current directory (Project2/opencilk)
-# 2. Try 'cilk' command (if installed via package manager)
-# 3. Fallback to 'clang'
+# Detect OpenCilk
 LOCAL_CILK_CHECK := $(shell test -x ./opencilk/bin/clang && echo yes)
 
 ifeq ($(LOCAL_CILK_CHECK),yes)
-    # If local opencilk exists, use it
-    # Use abspath to ensure we get a clean absolute path even with relative symlinks
     CILK_BASE := $(abspath ./opencilk)
-    
-    # CRITICAL: Use absolute path for CC so MPI wrapper finds it
     CC := $(CILK_BASE)/bin/clang
-    
-    # Debug info
-    $(info [Config] Found local OpenCilk at: $(CILK_BASE))
-    $(info [Config] Setting CC to: $(CC))
-    
-    # ALSO UPDATE PATH for subshells so access to llvm-profdata etc. works
     export PATH := $(CILK_BASE)/bin:$(PATH)
+    $(info [Config] Local OpenCilk: $(CC))
 else
-    # Fallback to system search
     CILK_PATH := $(shell which cilk 2>/dev/null)
     ifeq ($(CILK_PATH),)
         CC = clang
-        $(warning [Config] OpenCilk not found locally or in PATH. Defaulting to 'clang'. This may fail on clusters if clang is missing.)
+        $(warning [Config] OpenCilk not found. Defaulting to 'clang'.)
     else
         CC = $(CILK_PATH)
-        $(info [Config] Using system OpenCilk: $(CC))
+        $(info [Config] System OpenCilk: $(CC))
     endif
 endif
 
-# Force MPI wrappers to use our detected compiler
+# MPI Configuration
+MPICC = mpicc
 export OMPI_CC=$(CC)
 export MPICH_CC=$(CC)
 export I_MPI_CC=$(CC)
 
-# Compilation Flags:
-# -fopencilk: Enable OpenCilk parallelism
-# -O3: Maximum optimization level
-# -march=native: Optimize for the current CPU architecture
-# -flto: Enable link-time optimization
-# -fprofile-instr-use: Use profile-guided optimization (PGO) data
-# -Wall: Enable all warnings
-# -pthread: Enable POSIX threads support
-# -I.: Include current directory for headers
-CFLAGS_CILK = -fopencilk -O3 -march=native -flto -fprofile-instr-use=logs/bfscilk.profdata -Wall -pthread -I. -Isrc -Ibfscilk
-
-# Linker Flags:
-# -lmatio: Link against matio library (for .mat file reading)
-# -fuse-ld=lld: Use LLVM's lld linker for faster linking
-LDFLAGS_CILK = -lmatio -fopencilk -flto -fuse-ld=lld -pthread
-
-# Source files for Cilk version
-SRCS = src/main.c bfscilk/BFScilk.c src/mat_to_csr.c
-
-# Output directories
-BIN_DIR := bin
-BIN_CILK := $(BIN_DIR)/cilk
-OBJDIR_CILK := obj_cilk
-
-# Object files and target executable for Cilk version
-OBJS_CILK = $(OBJDIR_CILK)/src/main.o $(OBJDIR_CILK)/src/mat_to_csr.o $(OBJDIR_CILK)/bfscilk/BFScilk.o
-OBJS = $(OBJS_CILK)
-TARGET = $(BIN_CILK)/main
-
-# Declare phony targets (not actual files)
-.PHONY: all clean dirs mpi dirs_mpi profile_cilk
-
 # ------------------------------------------------------------------------------
-# Build Targets (Cilk)
+# Build Flags
 # ------------------------------------------------------------------------------
 
-# Default target: Build the Cilk version
-all: dirs $(TARGET)
+# Common Flags
+CFLAGS_COMMON  = -fopencilk -O3 -march=native -flto -Wall -I. -Isrc
+LDFLAGS_COMMON = -lmatio -fopencilk -flto -fuse-ld=lld
 
-# Create necessary directories for Cilk build
-dirs:
-	@mkdir -p $(OBJDIR_CILK)/src $(OBJDIR_CILK)/bfscilk $(BIN_CILK)
+# Cilk-specific
+CFLAGS_CILK    = $(CFLAGS_COMMON) -pthread -Ibfscilk -fprofile-instr-use=logs/bfscilk.profdata
+LDFLAGS_CILK   = $(LDFLAGS_COMMON) -pthread
 
-# Link object files into final executable
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS_CILK) -o $@ $(OBJS) $(LDFLAGS_CILK)
+# MPI-specific
+CFLAGS_MPI     = $(CFLAGS_COMMON) -Ibfsmpi -fprofile-instr-use=logs/bfsmpi.profdata
+LDFLAGS_MPI    = $(LDFLAGS_COMMON)
 
-# Pattern rule: Compile .c files to .o files
-$(OBJDIR_CILK)/%.o: %.c
-	@mkdir -p $(dir $@)
+# ------------------------------------------------------------------------------
+# Sources & Objects
+# ------------------------------------------------------------------------------
+
+# Output Directories
+BIN_DIR     := bin
+OBJ_DIR     := obj
+BIN_CILK    := $(BIN_DIR)/cilk
+BIN_MPI     := $(BIN_DIR)/mpi
+OBJ_CILK    := $(OBJ_DIR)/cilk
+OBJ_MPI     := $(OBJ_DIR)/mpi
+
+# Cilk Targets
+SRCS_CILK   := src/main.c bfscilk/BFScilk.c src/mat_to_csr.c
+OBJS_CILK   := $(SRCS_CILK:%.c=$(OBJ_CILK)/%.o)
+TARGET_CILK := $(BIN_CILK)/main
+
+# MPI Targets
+SRCS_MPI    := src/main_mpi.c bfsmpi/BFSmpi.c bfsmpi/partition.c src/mat_to_csr.c
+OBJS_MPI    := $(SRCS_MPI:%.c=$(OBJ_MPI)/%.o)
+TARGET_MPI  := $(BIN_MPI)/main
+
+# ------------------------------------------------------------------------------
+# Rules
+# ------------------------------------------------------------------------------
+
+.PHONY: all clean mpi profile profile_cilk autotune
+
+all: $(TARGET_CILK)
+
+mpi: $(TARGET_MPI)
+
+# Cilk Build Rules
+$(TARGET_CILK): $(OBJS_CILK)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS_CILK) -o $@ $^ $(LDFLAGS_CILK)
+
+$(OBJ_CILK)/%.o: %.c
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS_CILK) -c $< -o $@
 
-# Clean all build artifacts
-clean:
-	rm -rf $(OBJDIR_CILK) $(OBJDIR_MPI) $(BIN_DIR)
-	rm -f *.o logs/*.profraw
-
-# ------------------------------------------------------------------------------
-# MPI (Distributed Memory) Configuration
-# ------------------------------------------------------------------------------
-
-# Force MPI to use Clang as the underlying C compiler
-export OMPI_CC=$(CC)
-
-# MPI compiler wrapper
-MPICC = mpicc
-
-# MPI Compilation Flags (includes PGO, Cilk for nested parallelism)
-CFLAGS_MPI = -fopencilk -O3 -march=native -flto -fprofile-instr-use=logs/bfsmpi.profdata -Wall -I. -Isrc -Ibfsmpi
-
-# MPI Linker Flags
-LDFLAGS_MPI = -lmatio -fopencilk -flto -fuse-ld=lld
-
-# Source files for MPI version
-SRCS_MPI = src/main_mpi.c bfsmpi/BFSmpi.c bfsmpi/partition.c src/mat_to_csr.c
-
-# Output directories and files
-OBJDIR_MPI = obj_mpi
-OBJS_MPI = $(patsubst %.c, $(OBJDIR_MPI)/%.o, $(SRCS_MPI))
-TARGET_MPI = bin/mpi/main
-
-# ------------------------------------------------------------------------------
-# Build Targets (MPI)
-# ------------------------------------------------------------------------------
-
-# Build the MPI version
-mpi: dirs_mpi $(TARGET_MPI)
-
-# Create necessary directories for MPI build
-dirs_mpi:
-	@mkdir -p $(OBJDIR_MPI)/src $(OBJDIR_MPI)/bfsmpi bin/mpi
-
-# Link MPI object files into final executable
+# MPI Build Rules
 $(TARGET_MPI): $(OBJS_MPI)
-	$(MPICC) $(CFLAGS_MPI) -o $@ $(OBJS_MPI) $(LDFLAGS_MPI)
+	@mkdir -p $(@D)
+	$(MPICC) $(CFLAGS_MPI) -o $@ $^ $(LDFLAGS_MPI)
 
-# Pattern rule: Compile .c files to .o files for MPI
-$(OBJDIR_MPI)/%.o: %.c
-	@mkdir -p $(dir $@)
+$(OBJ_MPI)/%.o: %.c
+	@mkdir -p $(@D)
 	$(MPICC) $(CFLAGS_MPI) -c $< -o $@
 
+# Clean
+clean:
+	rm -rf $(OBJ_DIR) $(BIN_DIR) logs/*.profraw
+
 # ------------------------------------------------------------------------------
-# Profile-Guided Optimization (PGO) Targets
+# Profile-Guided Optimization (PGO)
 # ------------------------------------------------------------------------------
 
-# Generate PGO profile data for MPI version
-# Steps:
-#   1. Clean previous builds
-#   2. Build with instrumentation (-fprofile-instr-generate)
-#   3. Run benchmark to collect profile data
-#   4. Merge all .profraw files into a single .profdata file
-#   5. Clean instrumented build (next 'make mpi' will use the profile)
-profile:
-	$(MAKE) clean
-	$(MAKE) mpi CFLAGS_MPI="-fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi" LDFLAGS_MPI="-lmatio -fopencilk -flto -fuse-ld=lld -fprofile-instr-generate"
-	LLVM_PROFILE_FILE="logs/bfsmpi-%p.profraw" ./scripts/bench_mpi.sh "Mat file/com-LiveJournal.mat" 1
-	llvm-profdata merge -output=logs/bfsmpi.profdata logs/bfsmpi-*.profraw
-	$(MAKE) clean
-	@echo "Profile generated in logs/bfsmpi.profdata. Run 'make mpi' to use it."
+# Helper for PGO
+PGO_GEN_FLAGS_CILK_C = $(filter-out -fprofile-instr-use=%,$(CFLAGS_CILK)) -fprofile-instr-generate
+PGO_GEN_FLAGS_CILK_L = $(filter-out -fprofile-instr-use=%,$(LDFLAGS_CILK)) -fprofile-instr-generate
+PGO_GEN_FLAGS_MPI_C  = $(filter-out -fprofile-instr-use=%,$(CFLAGS_MPI)) -fprofile-instr-generate
+PGO_GEN_FLAGS_MPI_L  = $(filter-out -fprofile-instr-use=%,$(LDFLAGS_MPI)) -fprofile-instr-generate
 
-# Generate PGO profile data for Cilk version
-# Similar to MPI profile, but for the shared-memory Cilk version
-profile_cilk:
-	$(MAKE) clean
-	$(MAKE) dirs
-	$(MAKE) $(TARGET) CFLAGS_CILK="-fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -pthread -I. -Isrc -Ibfscilk" LDFLAGS_CILK="-lmatio -fopencilk -flto -fuse-ld=lld -fprofile-instr-generate -pthread"
-	LLVM_PROFILE_FILE="logs/bfscilk-%p.profraw" ./$(TARGET) "Mat file/com-LiveJournal.mat"
+profile_cilk: clean
+	@mkdir -p $(BIN_CILK) logs
+	$(MAKE) $(TARGET_CILK) CFLAGS_CILK="$(PGO_GEN_FLAGS_CILK_C)" LDFLAGS_CILK="$(PGO_GEN_FLAGS_CILK_L)"
+	LLVM_PROFILE_FILE="logs/bfscilk-%p.profraw" ./$(TARGET_CILK) "Mat file/com-LiveJournal.mat"
 	llvm-profdata merge -output=logs/bfscilk.profdata logs/bfscilk-*.profraw
 	$(MAKE) clean
-	@echo "Profile generated in logs/bfscilk.profdata. Run 'make' to use it."
+	@echo "Profile generated: logs/bfscilk.profdata"
+
+profile: clean
+	@mkdir -p $(BIN_MPI) logs
+	$(MAKE) $(TARGET_MPI) CFLAGS_MPI="$(PGO_GEN_FLAGS_MPI_C)" LDFLAGS_MPI="$(PGO_GEN_FLAGS_MPI_L)"
+	LLVM_PROFILE_FILE="logs/bfsmpi-%p.profraw" ./scripts/bench_mpi.sh "Mat file/mawi_201512020330.mat" 1
+	llvm-profdata merge -output=logs/bfsmpi.profdata logs/bfsmpi-*.profraw
+	$(MAKE) clean
+	@echo "Profile generated: logs/bfsmpi.profdata"
 
 # ------------------------------------------------------------------------------
-# Autotune Target
+# Utilities
 # ------------------------------------------------------------------------------
 
-# Run autotuning script to find optimal MPI/worker configurations
-autotune:
+# Prepare: Detect .mat file and pre-generate .csrbin
+prepare: $(TARGET_CILK)
+	@echo "Detected Matrix: $$(./scripts/bench_mpi.sh --detect-only 2>/dev/null | grep 'Auto-detected' | awk '{print $$3}')"
+	@# We use the bench script to find the file, then run conversion
+	@MAT_FILE=$$(find "Mat file" -name "*.mat" 2>/dev/null | head -n 1); \
+	if [ -z "$$MAT_FILE" ]; then \
+		MAT_FILE=$$(find . -maxdepth 1 -name "*.mat" 2>/dev/null | head -n 1); \
+	fi; \
+	if [ -n "$$MAT_FILE" ]; then \
+		echo "Preparing cache for $$MAT_FILE ..."; \
+		./$(TARGET_CILK) "$$MAT_FILE" --convert-only; \
+	else \
+		echo "No .mat file found to prepare."; \
+	fi
+
+autotune: prepare
 	@chmod +x scripts/autotune_mpi.sh
-	./scripts/autotune_mpi.sh "Mat file/com-LiveJournal.mat"
+	./scripts/autotune_mpi.sh

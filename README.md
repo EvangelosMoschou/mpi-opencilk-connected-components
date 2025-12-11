@@ -64,6 +64,13 @@ You can control all optimizations via environment variables:
 | `BFS_PREFETCH_DIST` | 16 | Lookahead distance for prefetching. |
 | `BFS_ZERO_PLANTING` | 1 | Enable Zero Planting (1=ON, 0=OFF). |
 | `BFS_HUB_PUSH` | 1 | Enable Hub Push (1=ON, 0=OFF). |
+| `BFS_DISTRIBUTED` | 0 | Enable Edge-Balanced Distributed Loading (1=ON, 0=OFF). Saves RAM. |
+| `BFS_HYBRID_PACKING`| 0 | Enable Multi-threaded Communication Packing (1=ON, 0=OFF). for Hybrid. |
+
+### 7. Hybrid Parallelism & Distributed Loading
+- **Distributed Loading (`BFS_DISTRIBUTED=1`)**: Instead of Rank 0 processing the whole graph, all ranks load their partition directly. Crucial for massive graphs (reduces Rank 0 peak memory).
+- **Hybrid Packing (`BFS_HYBRID_PACKING=1`)**: Fully parallelizes the MPI communication layer using OpenCilk threads inside each MPI rank. 
+  - *Note:* Requires `CILK_NWORKERS > 1` and `mpirun --bind-to none` to be effective.
 
 ### Usage Examples
 
@@ -80,6 +87,10 @@ BFS_HUB_PUSH=0 ./bin/cilk/main "Mat file/kmer_V1r.mat"
 ```bash
 # Run with 4 MPI processes, passing environment variables
 mpirun -np 4 -x BFS_HUB_PUSH=0 ./bin/mpi/main "Mat file/kmer_V1r.mat"
+
+# Run Hybrid (4 MPI x 4 Threads) with Max Optimization
+BFS_DISTRIBUTED=1 BFS_HYBRID_PACKING=1 CILK_NWORKERS=4 \
+mpirun -np 4 --bind-to none ./bin/mpi/main "Mat file/kmer_V1r.mat"
 ```
 
 ---
