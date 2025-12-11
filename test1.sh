@@ -11,9 +11,25 @@
 
 
 # Load modules in dependency order
-# OpenCilk v2.0 requires gcc/9.4.0
+# Load modules
+# We need GCC for dependencies (OpenCilk often needs a specific libstdc++ or runtime)
 module load gcc/9.4.0-eewq4j6
-module load OpenCilk/v2.0
+# module load OpenCilk/v2.0 # Using local opencilk folder instead
+
+# Load other dependencies
+module load openmpi/5.0.3-rhzbeym
+module load matio/1.5.26-xzs7hxf
+
+# Setup Local OpenCilk Environment
+PROJECT_ROOT=$(pwd)
+if [ -d "$PROJECT_ROOT/opencilk" ]; then
+    echo "Using Local OpenCilk from $PROJECT_ROOT/opencilk"
+    export PATH="$PROJECT_ROOT/opencilk/bin:$PATH"
+    export LD_LIBRARY_PATH="$PROJECT_ROOT/opencilk/lib:$PROJECT_ROOT/opencilk/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+else
+    echo "Error: Local 'opencilk' directory not found!"
+    exit 1
+fi
 
 # Load other dependencies (may swap GCC runtime but hopefully compatible)
 module load openmpi/5.0.3-rhzbeym
