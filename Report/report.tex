@@ -190,7 +190,7 @@ MPI CC: procs=8 iters=3128528 time=5.634901 s components=3971144
 The asynchronous algorithm achieves \textbf{1.56x speedup} over the sequential baseline (7.56s $\rightarrow$ 4.84s) by overlapping computation with communication.
 
 \subsubsection{PGO Impact}
-Profile-Guided Optimization reduced iterations from 4.3M to 3.1M through better branch prediction, but the final time (5.63s) is slightly higher than the non-PGO async run (4.84s) due to profiling overhead variations.
+Profile-Guided Optimization reduced iterations from 4.3M to 3.1M through better branch prediction, but the final time (5.63s) is slightly higher than the non-PGO async run (4.84s). This is attributed to cluster load conditions: the PGO tests (test10, test11) were executed on a day when the cluster was significantly more overloaded, causing all builds and runs to complete slower than usual.
 
 % ------------------------------------------------------------------------------
 % Section 6: Conclusion
