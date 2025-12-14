@@ -137,16 +137,19 @@ Experiments were conducted on the AUTH HPC cluster ``Rome'' partition (AMD EPYC,
 
 \begin{table}[H]
 \centering
-\begin{tabular}{lcccc}
+\begin{tabular}{lccccc}
 \toprule
-\textbf{Configuration} & \textbf{Nodes} & \textbf{Procs} & \textbf{Algorithm} & \textbf{Time (s)} \\
+\textbf{Test} & \textbf{Nodes} & \textbf{Procs} & \textbf{Algorithm} & \textbf{Time (s)} & \textbf{Speedup} \\
 \midrule
-Sequential Baseline      & 1 & 1 & Sync   & 7.56 \\
-Distributed Async        & 2 & 8 & Async  & 4.84 \\
-Async + PGO              & 2 & 8 & Async  & \textbf{5.63} \\
+test5  & 1 & 1  & Sync (Sequential)  & 7.56  & 1.00× \\
+test1  & 1 & 1  & Sync (10 Workers)  & 4.65  & 1.63× \\
+test8  & 2 & 4  & Async              & 5.87  & 1.29× \\
+test9  & 2 & 8  & Async              & \textbf{4.82}  & 1.57× \\
+test10 & 2 & 8  & Sync + PGO         & 12.15 & 0.62× \\
+test11 & 2 & 8  & Async + PGO        & 5.63  & 1.34× \\
 \bottomrule
 \end{tabular}
-\caption{Performance comparison on mawi\_201512020330 (480M edges). All configurations find 3,971,144 components.}
+\caption{Performance comparison on mawi\_201512020330 (480M edges). All configurations find 3,971,144 components. Speedup relative to sequential baseline (test5).}
 \end{table}
 
 \subsubsection{Slurm Output: Edge-Balanced Partition}
