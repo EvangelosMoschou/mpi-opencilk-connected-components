@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-MAT_FILE="mycielskian20.mat"  # Assuming this exists in the current directory or a subdirectory
+MAT_FILE="com-Friendster.mat"  # ~65M vertices, ~1.8B edges
 PROCS=8                       # Number of MPI processes
 CPUS_PER_PROC=1               # OpenCilk workers per process
 BIN_DIR="bin/local_fast"
@@ -20,6 +20,7 @@ export BFS_PREFETCH_DIST=32
 export BFS_ASYNC=1
 export BFS_ASSUME_SYMMETRIC=1 # Skip symmetrization (saves 3x RAM)
 export BFS_SKIP_REORDER=1     # Skip reordering (saves 2x RAM)
+# export BFS_USE_FRONTIER=1   # DISABLED: OOM due to large buffers
 
 # Setup Local OpenCilk (Adjust path as needed, assuming project root)
 PROJECT_ROOT="$(pwd)"

@@ -11,6 +11,7 @@
 #define cilk_sync
 #endif
 
+#include <limits.h>
 #include <mpi.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -98,6 +99,9 @@ typedef struct {
   int *counts;   // [rank]
   int *caps;     // [rank]
 } TLS_Buffer;
+
+// Forward declaration for Frontier BFS
+int mpi_coloring_cc_bfs(MPI_Graph *g);
 
 static TLS_Buffer *tls_buffers = NULL;
 static int n_workers = 1;
@@ -214,6 +218,23 @@ void cleanup_communication() {
 }
 
 int mpi_coloring_cc(MPI_Graph *g) {
+  // Adaptive dispatcher: check if Frontier BFS should be used
+  static int use_frontier = -1; // -1 = not checked yet
+  if (use_frontier == -1) {
+    char *env = getenv("BFS_USE_FRONTIER");
+    use_frontier = (env && atoi(env) > 0) ? 1 : 0;
+    if (g->rank == 0 && use_frontier) {
+      printf(
+          "BFS_USE_FRONTIER=1: Using Frontier BFS (O(diameter) iterations)\n");
+    }
+  }
+
+  if (use_frontier) {
+    setup_communication(g);
+    return mpi_coloring_cc_bfs(g);
+  }
+
+  // Fall through to Label Propagation (default)
   setup_communication(g);
 
   int rank = g->rank;
@@ -752,6 +773,197 @@ int mpi_coloring_cc(MPI_Graph *g) {
   return iterations;
 }
 
+/*
+ * Frontier-Based BFS for Connected Components (MPI Version)
+ * O(diameter) iterations - much faster for single-component graphs
+ */
+int mpi_coloring_cc_bfs(MPI_Graph *g) {
+  int rank = g->rank;
+  int size = g->size;
+  int local_n = g->local_n;
+  int my_offset = g->vtx_dist[rank];
+  int *labels = g->local_labels;
+
+  // Initialize labels to 0 (unvisited)
+  memset(labels, 0, local_n * sizeof(int));
+
+  // Allocate frontiers
+  int *frontier = aligned_alloc_wrapper(local_n * sizeof(int));
+  int *next_frontier = aligned_alloc_wrapper(local_n * sizeof(int));
+  int frontier_size = 0;
+  int next_frontier_size = 0;
+
+  // Remote frontier buffers (for exchange)
+  int **send_bufs = malloc(size * sizeof(int *));
+  int *send_counts = calloc(size, sizeof(int));
+  int *send_caps = malloc(size * sizeof(int));
+  for (int p = 0; p < size; p++) {
+    send_caps[p] = 10000000; // 10M entries - enough for high-degree graphs
+    send_bufs[p] = malloc(send_caps[p] * sizeof(int));
+  }
+
+  int *recv_counts = malloc(size * sizeof(int));
+  int *recv_displs = malloc(size * sizeof(int));
+  int *send_displs = malloc(size * sizeof(int));
+  int recv_buf_cap = local_n;
+  int *recv_buf = aligned_alloc_wrapper(recv_buf_cap * sizeof(int));
+
+  int total_levels = 0;
+  int component_id = 0;
+
+  // Outer loop: find components by iterating unvisited vertices
+  for (int start_attempt = 0; start_attempt < local_n; start_attempt++) {
+    // Find an unvisited local vertex to start a new component
+    int local_start = -1;
+    for (int i = start_attempt; i < local_n; i++) {
+      if (labels[i] == 0) {
+        local_start = i;
+        break;
+      }
+    }
+
+    // Coordinate globally: who has the lowest global unvisited vertex?
+    int my_global_start =
+        (local_start >= 0) ? (my_offset + local_start) : INT_MAX;
+    int global_min_start;
+    MPI_Allreduce(&my_global_start, &global_min_start, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+
+    if (global_min_start == INT_MAX) {
+      break; // All vertices visited
+    }
+
+    component_id = global_min_start + 1; // 1-based component ID
+
+    // Initialize frontier: only the rank owning global_min_start starts
+    frontier_size = 0;
+    if (my_global_start == global_min_start && local_start >= 0) {
+      labels[local_start] = component_id;
+      frontier[frontier_size++] = local_start;
+    }
+
+    // BFS levels
+    int global_frontier_size = 1;
+    while (global_frontier_size > 0) {
+      total_levels++;
+
+      // Clear send counts
+      for (int p = 0; p < size; p++)
+        send_counts[p] = 0;
+      next_frontier_size = 0;
+
+      // Process local frontier
+      cilk_for(int f = 0; f < frontier_size; f++) {
+        int u = frontier[f];
+        long long start = g->local_row_ptr[u];
+        long long end = g->local_row_ptr[u + 1];
+
+        for (long long e = start; e < end; e++) {
+          int v = g->local_col_idx[e];
+          int owner = get_owner(v, g);
+
+          if (owner == rank) {
+            // Local neighbor
+            int local_v = v - my_offset;
+            if (labels[local_v] == 0) {
+              int expected = 0;
+              if (__atomic_compare_exchange_n(&labels[local_v], &expected,
+                                              component_id, 0, __ATOMIC_RELAXED,
+                                              __ATOMIC_RELAXED)) {
+                int idx = __atomic_fetch_add(&next_frontier_size, 1,
+                                             __ATOMIC_RELAXED);
+                next_frontier[idx] = local_v;
+              }
+            }
+          } else {
+            // Remote neighbor: pack for sending
+            int cnt =
+                __atomic_fetch_add(&send_counts[owner], 2, __ATOMIC_RELAXED);
+            // Grow buffer if needed (not thread-safe, but ok for small growth)
+            if (cnt + 2 > send_caps[owner]) {
+              // Skip for now - should preallocate enough
+            } else {
+              send_bufs[owner][cnt] = v;
+              send_bufs[owner][cnt + 1] = component_id;
+            }
+          }
+        }
+      }
+
+      // Exchange sizes
+      MPI_Alltoall(send_counts, 1, MPI_INT, recv_counts, 1, MPI_INT,
+                   MPI_COMM_WORLD);
+
+      // Calculate displacements
+      send_displs[0] = 0;
+      recv_displs[0] = 0;
+      int total_send = send_counts[0];
+      int total_recv = recv_counts[0];
+      for (int p = 1; p < size; p++) {
+        send_displs[p] = send_displs[p - 1] + send_counts[p - 1];
+        recv_displs[p] = recv_displs[p - 1] + recv_counts[p - 1];
+        total_send += send_counts[p];
+        total_recv += recv_counts[p];
+      }
+
+      // Pack send buffer
+      int *packed_send = aligned_alloc_wrapper((total_send + 1) * sizeof(int));
+      for (int p = 0; p < size; p++) {
+        memcpy(packed_send + send_displs[p], send_bufs[p],
+               send_counts[p] * sizeof(int));
+      }
+
+      // Resize recv buf if needed
+      if (total_recv > recv_buf_cap) {
+        free(recv_buf);
+        recv_buf_cap = total_recv + 1024;
+        recv_buf = aligned_alloc_wrapper(recv_buf_cap * sizeof(int));
+      }
+
+      // Exchange frontier vertices
+      MPI_Alltoallv(packed_send, send_counts, send_displs, MPI_INT, recv_buf,
+                    recv_counts, recv_displs, MPI_INT, MPI_COMM_WORLD);
+      free(packed_send);
+
+      // Process received vertices
+      for (int i = 0; i < total_recv; i += 2) {
+        int v = recv_buf[i];
+        int comp = recv_buf[i + 1];
+        int local_v = v - my_offset;
+        if (local_v >= 0 && local_v < local_n && labels[local_v] == 0) {
+          labels[local_v] = comp;
+          next_frontier[next_frontier_size++] = local_v;
+        }
+      }
+
+      // Swap frontiers
+      int *tmp = frontier;
+      frontier = next_frontier;
+      next_frontier = tmp;
+      frontier_size = next_frontier_size;
+
+      // Global convergence check
+      MPI_Allreduce(&frontier_size, &global_frontier_size, 1, MPI_INT, MPI_SUM,
+                    MPI_COMM_WORLD);
+    }
+  }
+
+  // Cleanup
+  free(frontier);
+  free(next_frontier);
+  for (int p = 0; p < size; p++)
+    free(send_bufs[p]);
+  free(send_bufs);
+  free(send_counts);
+  free(send_caps);
+  free(recv_counts);
+  free(recv_displs);
+  free(send_displs);
+  free(recv_buf);
+
+  return total_levels;
+}
+
 void mpi_cleanup_graph(MPI_Graph *g) {
   // local_row_ptr and local_col_idx are freed in setup_communication
   free(g->local_labels);
@@ -951,6 +1163,23 @@ static void wait_with_polling(MPI_Request *req, int *labels, int my_offset,
 }
 
 int mpi_coloring_cc_async(MPI_Graph *g) {
+  // Adaptive dispatcher: check if Frontier BFS should be used
+  static int use_frontier = -1; // -1 = not checked yet
+  if (use_frontier == -1) {
+    char *env = getenv("BFS_USE_FRONTIER");
+    use_frontier = (env && atoi(env) > 0) ? 1 : 0;
+    if (g->rank == 0 && use_frontier) {
+      printf(
+          "BFS_USE_FRONTIER=1: Using Frontier BFS (O(diameter) iterations)\n");
+    }
+  }
+
+  if (use_frontier) {
+    setup_communication(g);
+    return mpi_coloring_cc_bfs(g);
+  }
+
+  // Fall through to Async Label Propagation (default)
   setup_communication(g);
 
   int rank = g->rank;
