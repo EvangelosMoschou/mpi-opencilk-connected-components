@@ -134,28 +134,52 @@ void free_tls_buffers(int workers, int size) {
 void setup_communication(MPI_Graph *g) {
   // Precompute distribution parameters
 
-  // 1. Count internal and remote edges
+  // 1. In-place partition adjacency lists into Internal | Remote
   g->internal_nnz = 0;
   g->remote_nnz = 0;
   comm.boundary_count = 0;
 
+  g->split_indices = aligned_alloc_wrapper(g->local_n * sizeof(long long));
+
+  // Use a temporary boundary array
   int *temp_boundary = malloc(g->local_n * sizeof(int));
+  int my_start = g->vtx_dist[g->rank];
+  int my_end = g->vtx_dist[g->rank + 1];
 
   for (int i = 0; i < g->local_n; i++) {
-    int start = g->local_row_ptr[i];
-    int end = g->local_row_ptr[i + 1];
-    int has_remote = 0;
-    for (int j = start; j < end; j++) {
-      int neighbor = g->local_col_idx[j];
-      if (neighbor >= g->vtx_dist[g->rank] &&
-          neighbor < g->vtx_dist[g->rank + 1]) {
-        g->internal_nnz++;
+    long long start = g->local_row_ptr[i];
+    long long end = g->local_row_ptr[i + 1];
+    long long count = end - start;
+
+    // Partition range [start, end) in local_col_idx
+    // We want internal edges (in [my_start, my_end)) to be at the front
+    long long left = start;
+    long long right = end - 1;
+
+    while (left <= right) {
+      int v = g->local_col_idx[left];
+      int is_internal = (v >= my_start && v < my_end);
+
+      if (is_internal) {
+        left++;
       } else {
-        g->remote_nnz++;
-        has_remote = 1;
+        // Swap with right
+        int temp = g->local_col_idx[right];
+        g->local_col_idx[right] = g->local_col_idx[left];
+        g->local_col_idx[left] = temp;
+        right--;
+        // Stay at left to check the swapped-in value
       }
     }
-    if (has_remote) {
+
+    // left is now the split index (start of remote edges)
+    g->split_indices[i] = left;
+
+    long long splits = left - start; // number of internal edges
+    g->internal_nnz += splits;
+    g->remote_nnz += (count - splits);
+
+    if (splits < count) { // If has remote edges
       temp_boundary[comm.boundary_count++] = i;
     }
   }
@@ -164,53 +188,6 @@ void setup_communication(MPI_Graph *g) {
   memcpy(comm.boundary_indices, temp_boundary,
          comm.boundary_count * sizeof(int));
   free(temp_boundary);
-
-  // 2. Allocate split arrays
-  g->internal_row_ptr = aligned_alloc_wrapper((g->local_n + 1) * sizeof(int));
-  g->internal_col_idx = aligned_alloc_wrapper(g->internal_nnz * sizeof(int));
-
-  g->remote_row_ptr = aligned_alloc_wrapper((g->local_n + 1) * sizeof(int));
-  g->remote_col_idx = aligned_alloc_wrapper(g->remote_nnz * sizeof(int));
-  g->remote_owners = aligned_alloc_wrapper(g->remote_nnz * sizeof(int));
-
-  // 3. Fill split arrays
-  int internal_pos = 0;
-  int remote_pos = 0;
-  g->internal_row_ptr[0] = 0;
-  g->remote_row_ptr[0] = 0;
-
-  for (int i = 0; i < g->local_n; i++) {
-    int start = g->local_row_ptr[i];
-    int end = g->local_row_ptr[i + 1];
-
-    for (int j = start; j < end; j++) {
-      int neighbor = g->local_col_idx[j];
-      if (neighbor >= g->vtx_dist[g->rank] &&
-          neighbor < g->vtx_dist[g->rank + 1]) {
-        g->internal_col_idx[internal_pos++] = neighbor;
-      } else {
-        g->remote_col_idx[remote_pos] = neighbor;
-        // Compute owner
-        int owner;
-        if (neighbor < 0) { // Should not happen with unsigned/int
-          // Handle error or ignore
-          owner = 0;
-        } else {
-          owner = get_owner(neighbor, g);
-        }
-        g->remote_owners[remote_pos] = owner;
-        remote_pos++;
-      }
-    }
-    g->internal_row_ptr[i + 1] = internal_pos;
-    g->remote_row_ptr[i + 1] = remote_pos;
-  }
-
-  // Free original adjacency lists to save memory
-  free(g->local_row_ptr);
-  free(g->local_col_idx);
-  g->local_row_ptr = NULL;
-  g->local_col_idx = NULL;
 
   // Init comm buffers
   comm.send_counts = calloc(g->size, sizeof(int));
@@ -326,8 +303,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
     int local_max_deg = -1;
 
     for (int i = 0; i < local_n; i++) {
-      int deg = (g->internal_row_ptr[i + 1] - g->internal_row_ptr[i]) +
-                (g->remote_row_ptr[i + 1] - g->remote_row_ptr[i]);
+      int deg = g->local_row_ptr[i + 1] - g->local_row_ptr[i];
       if (deg > local_max_deg) {
         local_max_deg = deg;
         local_max_v = i;
@@ -367,29 +343,28 @@ int mpi_coloring_cc(MPI_Graph *g) {
         int val = labels[local_max_v];
 
         // Calculate local average degree (heuristic)
-        int local_avg_deg =
-            (local_n > 0) ? (g->internal_row_ptr[local_n] / local_n) : 0;
+        int local_avg_deg = (local_n > 0) ? (g->local_nnz / local_n) : 0;
 
         // Internal neighbors
-        int start = g->internal_row_ptr[local_max_v];
-        int end = g->internal_row_ptr[local_max_v + 1];
-        for (int j = start; j < end; j++) {
-          int neighbor = g->internal_col_idx[j];
+        long long start = g->local_row_ptr[local_max_v];
+        long long end = g->split_indices[local_max_v];
+        for (long long j = start; j < end; j++) {
+          int neighbor = g->local_col_idx[j];
           if (atomic_min(&labels[neighbor - my_offset], val)) {
             bitset_set(next_changed, neighbor - my_offset);
 
             // Hub Push: If neighbor is a hub, push to its neighbors
             // Note: neighbor is local (internal edge)
             int neighbor_local_idx = neighbor - my_offset;
-            int neighbor_deg = (g->internal_row_ptr[neighbor_local_idx + 1] -
-                                g->internal_row_ptr[neighbor_local_idx]);
+            int neighbor_deg = (g->split_indices[neighbor_local_idx] -
+                                g->local_row_ptr[neighbor_local_idx]);
             // We ignore remote degree for simplicity in this heuristic check
 
             if (neighbor_deg > local_avg_deg) {
-              int n_start = g->internal_row_ptr[neighbor_local_idx];
-              int n_end = g->internal_row_ptr[neighbor_local_idx + 1];
-              for (int k = n_start; k < n_end; k++) {
-                int w = g->internal_col_idx[k];
+              long long n_start = g->local_row_ptr[neighbor_local_idx];
+              long long n_end = g->split_indices[neighbor_local_idx];
+              for (long long k = n_start; k < n_end; k++) {
+                int w = g->local_col_idx[k];
                 if (atomic_min(&labels[w - my_offset], val)) {
                   bitset_set(next_changed, w - my_offset);
                 }
@@ -518,30 +493,30 @@ int mpi_coloring_cc(MPI_Graph *g) {
           }
         }
 
-        int start = g->internal_row_ptr[i];
-        int end = g->internal_row_ptr[i + 1];
+        long long start = g->local_row_ptr[i];
+        long long end = g->split_indices[i];
 
-        int limit = end;
+        long long limit = end;
         if (iterations <= sampling_rounds) {
           if (start + sampling_k < end)
             limit = start + sampling_k;
         }
-        for (int j = start; j < limit; j++) {
+        for (long long j = start; j < limit; j++) {
           // Optimization: Software Prefetching
           if (prefetch_dist > 0) {
             // Stage 1: Prefetch neighbor index
             if (j + prefetch_dist * 2 < limit) {
-              __builtin_prefetch(&g->internal_col_idx[j + prefetch_dist * 2], 0,
+              __builtin_prefetch(&g->local_col_idx[j + prefetch_dist * 2], 0,
                                  3);
             }
             // Stage 2: Prefetch label
             if (j + prefetch_dist < limit) {
-              int neighbor_next = g->internal_col_idx[j + prefetch_dist];
+              int neighbor_next = g->local_col_idx[j + prefetch_dist];
               __builtin_prefetch(&labels[neighbor_next - my_offset], 0, 3);
             }
           }
 
-          int neighbor = g->internal_col_idx[j];
+          int neighbor = g->local_col_idx[j];
           // No range check needed for internal edges
           if (atomic_min(&labels[neighbor - my_offset], val)) {
             bitset_set(next_changed, neighbor - my_offset);
@@ -577,23 +552,22 @@ int mpi_coloring_cc(MPI_Graph *g) {
               break;
           }
 
-          int start = g->remote_row_ptr[u];
-          int end = g->remote_row_ptr[u + 1];
+          long long start = g->split_indices[u];
+          long long end = g->local_row_ptr[u + 1];
 
-          int limit = end;
+          long long limit = end;
           if (iterations <= sampling_rounds) {
             if (start + sampling_k < end)
               limit = start + sampling_k;
           }
-          for (int j = start; j < limit; j++) {
+          for (long long j = start; j < limit; j++) {
             // Prefetching
             if (prefetch_dist > 0 && j + prefetch_dist < limit) {
-              __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
-              __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
+              __builtin_prefetch(&g->local_col_idx[j + prefetch_dist], 0, 3);
             }
 
-            int neighbor = g->remote_col_idx[j];
-            int owner = g->remote_owners[j];
+            int neighbor = g->local_col_idx[j];
+            int owner = get_owner(neighbor, g);
 
             // Append to TLS buffer
             int cnt = tls_buffers[tid].counts[owner];
@@ -656,22 +630,21 @@ int mpi_coloring_cc(MPI_Graph *g) {
               break;
           }
 
-          int start = g->remote_row_ptr[u];
-          int end = g->remote_row_ptr[u + 1];
+          long long start = g->split_indices[u];
+          long long end = g->local_row_ptr[u + 1];
 
-          int limit = end;
+          long long limit = end;
           if (iterations <= sampling_rounds) {
             if (start + sampling_k < end)
               limit = start + sampling_k;
           }
-          for (int j = start; j < limit; j++) {
+          for (long long j = start; j < limit; j++) {
             if (prefetch_dist > 0 && j + prefetch_dist < limit) {
-              __builtin_prefetch(&g->remote_col_idx[j + prefetch_dist], 0, 3);
-              __builtin_prefetch(&g->remote_owners[j + prefetch_dist], 0, 3);
+              __builtin_prefetch(&g->local_col_idx[j + prefetch_dist], 0, 3);
             }
 
-            int neighbor = g->remote_col_idx[j];
-            int owner = g->remote_owners[j];
+            int neighbor = g->local_col_idx[j];
+            int owner = get_owner(neighbor, g);
 
             if (proc_counts[owner] + 2 > proc_caps[owner]) {
               proc_caps[owner] *= 2;
@@ -784,12 +757,11 @@ void mpi_cleanup_graph(MPI_Graph *g) {
   free(g->local_labels);
   free(g->vtx_dist);
 
+  // We KEEP the original adjacency lists now!
   // Free split arrays
-  free(g->internal_row_ptr);
-  free(g->internal_col_idx);
-  free(g->remote_row_ptr);
-  free(g->remote_col_idx);
-  free(g->remote_owners);
+  free(g->split_indices);
+  // free(g->local_row_ptr);
+  // free(g->local_col_idx);
 }
 
 int mpi_gather_labels(MPI_Graph *g, int *global_labels) {
@@ -812,7 +784,7 @@ int mpi_gather_labels(MPI_Graph *g, int *global_labels) {
   return 0;
 }
 
-int mpi_init_graph(MPI_Graph *g, int n, const int *row_ptr,
+int mpi_init_graph(MPI_Graph *g, int n, const long long *row_ptr,
                    const int *col_idx) {
   MPI_Comm_rank(MPI_COMM_WORLD, &g->rank);
   MPI_Comm_size(MPI_COMM_WORLD, &g->size);
@@ -829,21 +801,23 @@ int mpi_init_graph(MPI_Graph *g, int n, const int *row_ptr,
 
   g->local_n = g->vtx_dist[g->rank + 1] - g->vtx_dist[g->rank];
 
-  g->local_row_ptr = aligned_alloc_wrapper((g->local_n + 1) * sizeof(int));
+  g->local_row_ptr =
+      aligned_alloc_wrapper((g->local_n + 1) * sizeof(long long));
 
   if (g->rank == 0) {
     for (int p = 1; p < g->size; p++) {
       int p_start = g->vtx_dist[p];
       int p_count = (g->vtx_dist[p + 1] - g->vtx_dist[p]) + 1;
-      MPI_Send(&row_ptr[p_start], p_count, MPI_INT, p, 0, MPI_COMM_WORLD);
+      MPI_Send(&row_ptr[p_start], p_count, MPI_LONG_LONG_INT, p, 0,
+               MPI_COMM_WORLD);
     }
-    memcpy(g->local_row_ptr, row_ptr, (g->local_n + 1) * sizeof(int));
+    memcpy(g->local_row_ptr, row_ptr, (g->local_n + 1) * sizeof(long long));
   } else {
-    MPI_Recv(g->local_row_ptr, g->local_n + 1, MPI_INT, 0, 0, MPI_COMM_WORLD,
-             MPI_STATUS_IGNORE);
+    MPI_Recv(g->local_row_ptr, g->local_n + 1, MPI_LONG_LONG_INT, 0, 0,
+             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
   }
 
-  int global_start_idx = g->local_row_ptr[0];
+  long long global_start_idx = g->local_row_ptr[0];
   for (int i = 0; i <= g->local_n; i++) {
     g->local_row_ptr[i] -= global_start_idx;
   }
@@ -861,8 +835,8 @@ int mpi_init_graph(MPI_Graph *g, int n, const int *row_ptr,
     for (int p = 0; p < g->size; p++) {
       int p_start = g->vtx_dist[p];
       int p_end = g->vtx_dist[p + 1];
-      int start_idx = row_ptr[p_start];
-      int end_idx = row_ptr[p_end];
+      long long start_idx = row_ptr[p_start];
+      long long end_idx = row_ptr[p_end];
       sendcounts[p] = end_idx - start_idx;
       displs[p] = start_idx;
     }
@@ -880,8 +854,8 @@ int mpi_init_graph(MPI_Graph *g, int n, const int *row_ptr,
 }
 
 int mpi_init_graph_distributed(MPI_Graph *g, int global_n, int local_n,
-                               int *local_row_ptr, int *local_col_idx,
-                               int local_nnz, const int *vtx_dist) {
+                               long long *local_row_ptr, int *local_col_idx,
+                               long long local_nnz, const int *vtx_dist) {
   MPI_Comm_rank(MPI_COMM_WORLD, &g->rank);
   MPI_Comm_size(MPI_COMM_WORLD, &g->size);
   g->global_n = global_n;
@@ -915,4 +889,300 @@ int mpi_init_graph_distributed(MPI_Graph *g, int global_n, int local_n,
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
   return 0;
+}
+
+// ======================================================================
+
+// ======================================================================
+// ASYNCHRONOUS IMPLEMENTATION START
+// ======================================================================
+
+// Helper to check for incoming messages and process them
+static void poll_and_process_async(int *labels, int my_offset, int local_n,
+                                   int *recv_buf_tmp, int recv_cap,
+                                   uint64_t *next_changed,
+                                   long long *processed_count) {
+  int flag = 0;
+  MPI_Status status;
+  // Poll for message
+  MPI_Iprobe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &flag, &status);
+  while (flag) {
+    int count;
+    MPI_Get_count(&status, MPI_INT, &count);
+
+    // Blocking recv for the probed message
+    MPI_Recv(recv_buf_tmp, count, MPI_INT, status.MPI_SOURCE, 0, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
+
+    int received_items = count / 2;
+    *processed_count += received_items;
+
+    for (int k = 0; k < count; k += 2) {
+      int target = recv_buf_tmp[k];
+      int val = recv_buf_tmp[k + 1];
+      if (target >= my_offset && target < my_offset + local_n) {
+        if (atomic_min(&labels[target - my_offset], val)) {
+          bitset_set(next_changed, target - my_offset);
+        }
+      }
+    }
+
+    // Check again
+    MPI_Iprobe(MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &flag, &status);
+  }
+}
+
+// Helper to wait for a request while polling
+static void wait_with_polling(MPI_Request *req, int *labels, int my_offset,
+                              int local_n, int *recv_buf_tmp, int recv_cap,
+                              uint64_t *next_changed,
+                              long long *processed_count) {
+  if (*req == MPI_REQUEST_NULL)
+    return;
+
+  int flag = 0;
+  while (!flag) {
+    MPI_Test(req, &flag, MPI_STATUS_IGNORE);
+    if (!flag) {
+      poll_and_process_async(labels, my_offset, local_n, recv_buf_tmp, recv_cap,
+                             next_changed, processed_count);
+    }
+  }
+}
+
+int mpi_coloring_cc_async(MPI_Graph *g) {
+  setup_communication(g);
+
+  int rank = g->rank;
+  int size = g->size;
+  int local_n = g->local_n;
+  int *labels = g->local_labels;
+  int my_offset = g->vtx_dist[rank];
+
+  // Inform compiler about alignment
+  labels = __builtin_assume_aligned(labels, 64);
+  comm.send_buf = __builtin_assume_aligned(comm.send_buf, 64);
+
+  // Initialize labels (1-based)
+  cilk_for(int i = 0; i < local_n; i++) { labels[i] = my_offset + i + 1; }
+
+  // Frontier arrays
+  size_t frontier_words = BITSET_WORDS(local_n);
+  uint64_t *changed = aligned_alloc_wrapper(frontier_words * sizeof(uint64_t));
+  uint64_t *next_changed =
+      aligned_alloc_wrapper(frontier_words * sizeof(uint64_t));
+
+  // Initially all vertices actve
+  memset(changed, 0xFF, frontier_words * sizeof(uint64_t));
+  bitset_clear(next_changed, frontier_words);
+
+  if (local_n % BITSET_WORD_SIZE != 0) {
+    uint64_t mask = (1UL << (local_n % BITSET_WORD_SIZE)) - 1;
+    changed[frontier_words - 1] &= mask;
+  }
+
+  // --- Async specific buffers (Double Buffered) ---
+  int **async_send_bufs[2];
+  async_send_bufs[0] = malloc(size * sizeof(int *));
+  async_send_bufs[1] = malloc(size * sizeof(int *));
+
+  MPI_Request
+      *async_send_reqs[2]; // Fixed: Single pointer level (array of requests)
+  async_send_reqs[0] = malloc(size * sizeof(MPI_Request));
+  async_send_reqs[1] = malloc(size * sizeof(MPI_Request));
+
+  int *async_send_counts = calloc(size, sizeof(int));
+  int *async_active_buf_idx = calloc(size, sizeof(int));
+
+  int async_buf_cap = 4096; // Tunable: batch size
+  for (int p = 0; p < size; p++) {
+    async_send_bufs[0][p] = malloc(async_buf_cap * sizeof(int));
+    async_send_bufs[1][p] = malloc(async_buf_cap * sizeof(int));
+    async_send_reqs[0][p] = MPI_REQUEST_NULL;
+    async_send_reqs[1][p] = MPI_REQUEST_NULL;
+  }
+
+  // Temp Recv Buffer for polling
+  int *async_recv_buf = malloc((async_buf_cap + 1024) * sizeof(int));
+
+  // Termination stats
+  long long total_sent = 0;
+  long long total_recv = 0;
+
+  int iterations = 0;
+  int active = 1;
+
+  // Non-blocking termination state
+  MPI_Request term_req = MPI_REQUEST_NULL;
+  int term_check_active = 0;
+  long long term_send_recv_buf[2];
+  long long term_send_recv_global[2];
+  int term_idle_buf;
+  int term_idle_global;
+  MPI_Request term_idle_req = MPI_REQUEST_NULL;
+
+  while (active) {
+    iterations++;
+
+    // 1. Process local `changed` frontier
+    int any_changed_bit = 0;
+    for (size_t w = 0; w < frontier_words; w++) {
+      if (changed[w]) {
+        any_changed_bit = 1;
+        break;
+      }
+    }
+
+    if (any_changed_bit) {
+      for (int i = 0; i < local_n; i++) {
+        if (bitset_test(changed, i)) {
+          int val = labels[i];
+
+          // Local Propagation
+          long long start = g->local_row_ptr[i];
+          long long end = g->split_indices[i];
+          for (long long j = start; j < end; j++) {
+            int neighbor = g->local_col_idx[j];
+            if (atomic_min(&labels[neighbor - my_offset], val)) {
+              bitset_set(next_changed, neighbor - my_offset);
+            }
+          }
+
+          // Remote Propagation (Pack)
+          start = g->split_indices[i];
+          end = g->local_row_ptr[i + 1];
+          for (long long j = start; j < end; j++) {
+            int neighbor = g->local_col_idx[j];
+            int owner = get_owner(neighbor, g);
+
+            int idx = async_active_buf_idx[owner];
+            async_send_bufs[idx][owner][async_send_counts[owner]++] = neighbor;
+            async_send_bufs[idx][owner][async_send_counts[owner]++] = val;
+
+            // Check flush
+            if (async_send_counts[owner] >= async_buf_cap) {
+              // Time to send!
+              MPI_Isend(async_send_bufs[idx][owner], async_send_counts[owner],
+                        MPI_INT, owner, 0, MPI_COMM_WORLD,
+                        &async_send_reqs[idx][owner]);
+
+              total_sent += (async_send_counts[owner] / 2);
+              async_send_counts[owner] = 0;
+
+              // Switch buffer
+              int next_idx = 1 - idx;
+              async_active_buf_idx[owner] = next_idx;
+
+              // Ensure new buffer is free (Backpressure with Polling)
+              wait_with_polling(&async_send_reqs[next_idx][owner], labels,
+                                my_offset, local_n, async_recv_buf,
+                                async_buf_cap, next_changed, &total_recv);
+            }
+          }
+        }
+
+        // Frequent Polling
+        if (i % 256 == 0) {
+          long long recvd = 0;
+          poll_and_process_async(labels, my_offset, local_n, async_recv_buf,
+                                 async_buf_cap, next_changed, &recvd);
+          total_recv += recvd;
+        }
+      }
+    }
+
+    // Flush remaining buffers
+    for (int p = 0; p < size; p++) {
+      if (async_send_counts[p] > 0) {
+        int idx = async_active_buf_idx[p];
+        MPI_Isend(async_send_bufs[idx][p], async_send_counts[p], MPI_INT, p, 0,
+                  MPI_COMM_WORLD, &async_send_reqs[idx][p]);
+        total_sent += (async_send_counts[p] / 2);
+        async_send_counts[p] = 0;
+
+        int next_idx = 1 - idx;
+        async_active_buf_idx[p] = next_idx;
+
+        wait_with_polling(&async_send_reqs[next_idx][p], labels, my_offset,
+                          local_n, async_recv_buf, async_buf_cap, next_changed,
+                          &total_recv);
+      }
+    }
+
+    // 2. Poll hard
+    long long recvd = 0;
+    poll_and_process_async(labels, my_offset, local_n, async_recv_buf,
+                           async_buf_cap, next_changed, &recvd);
+    total_recv += recvd;
+
+    // 3. Swap Frontiers
+    uint64_t *tmp = changed;
+    changed = next_changed;
+    next_changed = tmp;
+    bitset_clear(next_changed, frontier_words);
+
+    // 4. Non-Blocking Termination
+    if (!term_check_active) {
+      if (iterations % 5 == 0) {
+        term_send_recv_buf[0] = total_sent;
+        term_send_recv_buf[1] = total_recv;
+
+        term_idle_buf = 1;
+        for (size_t w = 0; w < frontier_words; w++) {
+          if (changed[w]) {
+            term_idle_buf = 0;
+            break;
+          }
+        }
+
+        MPI_Iallreduce(term_send_recv_buf, term_send_recv_global, 2,
+                       MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD, &term_req);
+        MPI_Iallreduce(&term_idle_buf, &term_idle_global, 1, MPI_INT, MPI_LAND,
+                       MPI_COMM_WORLD, &term_idle_req);
+        term_check_active = 1;
+      }
+    } else {
+      int flag1 = 0, flag2 = 0;
+      MPI_Test(&term_req, &flag1, MPI_STATUS_IGNORE);
+      MPI_Test(&term_idle_req, &flag2, MPI_STATUS_IGNORE);
+
+      if (flag1 && flag2) {
+        term_check_active = 0;
+        if (term_idle_global &&
+            term_send_recv_global[0] == term_send_recv_global[1]) {
+          active = 0;
+        }
+      }
+    }
+  }
+
+  // Cleanup pending sends (Wait with Polling to be safe, though active=0 means
+  // we probably match states) Actually, if active=0, global quiesence is
+  // reached. All messages received. So all sends MUST have completed at
+  // destination? Not necessarily "Request" is free locally. We can just Wait.
+  for (int p = 0; p < size; p++) {
+    if (async_send_reqs[0][p] != MPI_REQUEST_NULL)
+      MPI_Wait(&async_send_reqs[0][p], MPI_STATUS_IGNORE);
+    if (async_send_reqs[1][p] != MPI_REQUEST_NULL)
+      MPI_Wait(&async_send_reqs[1][p], MPI_STATUS_IGNORE);
+  }
+
+  // Cleanup memory
+  for (int p = 0; p < size; p++) {
+    free(async_send_bufs[0][p]);
+    free(async_send_bufs[1][p]);
+  }
+  free(async_send_bufs[0]);
+  free(async_send_bufs[1]);
+  free(async_send_reqs[0]);
+  free(async_send_reqs[1]);
+  free(async_send_counts);
+  free(async_active_buf_idx);
+
+  free(async_recv_buf);
+  free(changed);
+  free(next_changed);
+  cleanup_communication();
+
+  return iterations;
 }

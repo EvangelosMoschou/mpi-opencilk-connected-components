@@ -198,7 +198,7 @@ int main(int argc, char *argv[]) {
         MPI_Abort(MPI_COMM_WORLD, 1);
       }
       n = csr.nrows;
-      printf("Loaded: %d vertices, %d edges\n", csr.nrows, csr.nzcount);
+      printf("Loaded: %d vertices, %lld edges\n", csr.nrows, csr.nzcount);
       fflush(stdout);
     }
 
@@ -213,7 +213,15 @@ int main(int argc, char *argv[]) {
 
   // Run distributed connected components
   double t0 = MPI_Wtime();
-  int iters = mpi_coloring_cc(&g);
+  int iters = 0;
+  char *env_async = getenv("BFS_ASYNC");
+  if (env_async && atoi(env_async) == 1) {
+    if (rank == 0)
+      printf("Running ASYNC version...\n");
+    iters = mpi_coloring_cc_async(&g);
+  } else {
+    iters = mpi_coloring_cc(&g);
+  }
   double t1 = MPI_Wtime();
 
   // Gather results
