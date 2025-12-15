@@ -13,6 +13,7 @@
 
 #include <limits.h>
 #include <mpi.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -241,33 +242,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
   }
 
   if (use_streaming) {
-    // Streaming BFS handles its own communication setup/teardown if needed??
-    // Actually our implementation uses 'comm' struct?
-    // No, I wrote init_stream_buffers which uses its own buffers.
-    // But does it assume setup_communication was called?
-    // Let's check init_stream_buffers... it allocates stream_bufs.
-    // It doesn't use 'comm' struct.
-    // But does it use g->vtx_dist etc? Yes, those are in g.
-    // 'setup_communication' sets up g->split_indices and comm struct.
-    // Does 'mpi_coloring_cc_bfs_streaming' use g->split_indices?
-    // Yes: "long long start = g->local_row_ptr[u];" ... "if (owner == rank)"
-    // Wait, mpi_coloring_cc_bfs uses g->split_indices to distinguish
-    // local/remote. mpi_coloring_cc_bfs_streaming uses g->local_col_idx
-    // directly and get_owner check. It *could* use split_indices for
-    // optimization, but the code I wrote effectively checks owner for every
-    // edge. Let's check my implementation of mpi_coloring_cc_bfs_streaming. "if
-    // (owner == rank) ... else push_wrapper". It iterates ALL edges: "long long
-    // end = g->local_row_ptr[u+1];". So it does NOT rely on split_indices.
-    // However, it does need g->vtx_dist (initialized in mpi_init_graph).
-    // So we normally DON'T need setup_communication(g) for streaming if we
-    // don't use split_indices. BUT! mpi_init_graph calls setup_communication
-    // implicitly? No, mpi_coloring_cc calls setup_communication. So if I don't
-    // call it, I save memory! BUT: does mpi_coloring_cc_bfs_streaming depend on
-    // anything from setup_communication? It depends on NOTHING from 'comm'
-    // struct. So we can SKIP setup_communication(g) and save that memory too!
-    // Excellent.
-
-    // However, ensuring g->vtx_dist is valid. Yes, mpi_init_graph does that.
+    // Streaming BFS manages its own buffers, skips setup_communication
     return mpi_coloring_cc_bfs_streaming(g);
   }
 
@@ -495,48 +470,8 @@ int mpi_coloring_cc(MPI_Graph *g) {
       if (bitset_test(changed, i)) {
         int val = labels[i];
 
-        // Optimization: Early Retirement
-        // If I already have the global minimum label (1), I don't need to do
-        // anything unless I need to propagate to neighbors who might not have
-        // it. But if I am 1, I only propagate 1. Wait, if I am 1, I should
-        // propagate to neighbors. But if I was *already* 1 in previous round
-        // and processed, I wouldn't be in 'changed'. If I just became 1, I need
-        // to propagate. So this check might be redundant if 'changed' logic is
-        // correct. However, if we scan all vertices (not using frontier), it's
-        // useful. Here we use frontier 'changed'. But let's keep it for
-        // safety/clarity or if we switch to dense scan. Actually, for
-        // frontier-based, if we are in 'changed', we MUST propagate. So "Early
-        // Retirement" in the sense of "skip processing" applies if we are NOT
-        // in changed. But maybe the user meant "if I see a neighbor with 1, I
-        // take it and stop looking at other neighbors". That is handled by
-        // atomic_min logic.
-
-        // Let's stick to the request: "if (my_label == 1) continue;" at top of
-        // loop. But if my_label is 1, I *should* propagate 1 to neighbors! If I
-        // continue, I stop propagating. That would be bad. UNLESS the logic is:
-        // "If I have 1, I have converged. My neighbors will get it from me."
-        // No, I am the active vertex. I need to push to neighbors.
-
-        // Re-reading user request: "If a vertex acquires the 0 (global minimum)
-        // label, it permanently retires." This implies it doesn't need to be
-        // processed again. But it needs to process ONCE to tell neighbors.
-        // After that, it is removed from 'changed'.
-        // So the frontier logic naturally handles retirement.
-        // Maybe the optimization is for the *pull* model? Or dense scan?
-        // In our push-based frontier model, if I am 1, I propagate. Next round
-        // I am not in 'changed'. So I am retired.
-
-        // However, maybe the user means: "If I am iterating neighbors and I
-        // find a neighbor is already 1, skip it?" Or "If I am 1, I don't need
-        // to check my parent pointer?"
-
-        // Let's implement the check as requested but ensure we don't break
-        // propagation. If I am 1, I still need to propagate. But maybe I don't
-        // need path compression?
-        if (val == 1) {
-          // I am 1. I don't need path compression.
-          // I just propagate 1 to neighbors.
-        } else {
+        // Skip path compression if already at global minimum
+        if (val != 1) {
           // Path Compression (Local Pointer Jumping)
           while (val > my_offset && val <= my_offset + local_n) {
             int parent = labels[val - my_offset - 1];
@@ -843,36 +778,7 @@ static int stream_recv_cap = 0;
 // 6. Then they use a non-blocking termination detection (Ibarrier or
 // consensus).
 
-void init_stream_buffers(int size, int cap_per_rank) {
-  stream_bufs = malloc(size * sizeof(StreamBuffer));
-  for (int p = 0; p < size; p++) {
-    stream_bufs[p].cap = cap_per_rank;
-    stream_bufs[p].primary = malloc(cap_per_rank * sizeof(int));
-    stream_bufs[p].secondary = malloc(cap_per_rank * sizeof(int));
-    stream_bufs[p].count = 0;
-    stream_bufs[p].req = MPI_REQUEST_NULL;
-    stream_bufs[p].active = 0;
-  }
-
-  stream_recv_cap = 1024 * 1024; // Start with 1MB recv buffer
-  stream_recv_buf = aligned_alloc_wrapper(stream_recv_cap * sizeof(int));
-}
-
-void free_stream_buffers(int size) {
-  if (!stream_bufs)
-    return;
-  for (int p = 0; p < size; p++) {
-    // Wait for any pending sends to complete before freeing!
-    if (stream_bufs[p].active) {
-      MPI_Wait(&stream_bufs[p].req, MPI_STATUS_IGNORE);
-    }
-    free(stream_bufs[p].primary);
-    free(stream_bufs[p].secondary);
-  }
-  free(stream_bufs);
-  free(stream_recv_buf);
-  stream_bufs = NULL;
-}
+// Old init/free removed. Using new thread-safe versions below.
 
 // Poll and process incoming messages
 // Returns number of integers received (for termination detection)
@@ -935,34 +841,7 @@ static void poll_wrapper(MPI_Graph *g, int *labels, int my_offset,
                                             next_frontier_size);
 }
 
-// Updated push
-static void push_wrapper(int target_rank, int v, int comp, MPI_Graph *g,
-                         int *labels, int my_offset, int *next_frontier,
-                         int *next_frontier_size) {
-  StreamBuffer *sb = &stream_bufs[target_rank];
-  sb->primary[sb->count++] = v;
-  sb->primary[sb->count++] = comp;
-
-  if (sb->count >= sb->cap) {
-    if (sb->active) {
-      int flag = 0;
-      while (!flag) {
-        MPI_Test(&sb->req, &flag, MPI_STATUS_IGNORE);
-        if (!flag)
-          poll_wrapper(g, labels, my_offset, next_frontier, next_frontier_size);
-      }
-      sb->active = 0;
-    }
-    int *tmp = sb->primary;
-    sb->primary = sb->secondary;
-    sb->secondary = tmp;
-    MPI_Isend(sb->secondary, sb->count, MPI_INT, target_rank, 1337,
-              MPI_COMM_WORLD, &sb->req);
-    ctx.total_sent += sb->count;
-    sb->active = 1;
-    sb->count = 0;
-  }
-}
+// push_wrapper removed - using push_to_global_locked instead
 
 static void flush_wrapper(int size, MPI_Graph *g, int *labels, int my_offset,
                           int *next_frontier, int *next_frontier_size) {
@@ -1002,6 +881,136 @@ static void wait_wrapper(int size, MPI_Graph *g, int *labels, int my_offset,
   }
 }
 
+// TLS for Streaming BFS (Thread-Local Buffers per destination rank)
+
+typedef struct {
+  int **buffers; // [size][cap]
+  int *counts;   // [size]
+  int *caps;     // [size]
+} TLS_Stream_Dynamic;
+
+static TLS_Stream_Dynamic *tls_stream_dyn = NULL;
+static pthread_mutex_t *stream_locks = NULL; // Locks for global stream buffers
+
+void init_tls_stream_dyn(int workers, int size) {
+  tls_stream_dyn = malloc(workers * sizeof(TLS_Stream_Dynamic));
+  for (int w = 0; w < workers; w++) {
+    tls_stream_dyn[w].buffers = malloc(size * sizeof(int *));
+    tls_stream_dyn[w].counts = calloc(size, sizeof(int));
+    tls_stream_dyn[w].caps = malloc(size * sizeof(int));
+    for (int p = 0; p < size; p++) {
+      tls_stream_dyn[w].caps[p] = 2048; // Small local buffer
+      tls_stream_dyn[w].buffers[p] = malloc(2048 * sizeof(int));
+    }
+  }
+}
+
+void free_tls_stream_dyn(int workers, int size) {
+  if (!tls_stream_dyn)
+    return;
+  for (int w = 0; w < workers; w++) {
+    for (int p = 0; p < size; p++) {
+      free(tls_stream_dyn[w].buffers[p]);
+    }
+    free(tls_stream_dyn[w].buffers);
+    free(tls_stream_dyn[w].counts);
+    free(tls_stream_dyn[w].caps);
+  }
+  free(tls_stream_dyn);
+  tls_stream_dyn = NULL;
+}
+
+void init_stream_buffers(int size, int cap_per_rank) {
+  stream_bufs = malloc(size * sizeof(StreamBuffer));
+  stream_locks = malloc(size * sizeof(pthread_mutex_t));
+
+  for (int p = 0; p < size; p++) {
+    stream_bufs[p].cap = cap_per_rank;
+    stream_bufs[p].primary = malloc(cap_per_rank * sizeof(int));
+    stream_bufs[p].secondary = malloc(cap_per_rank * sizeof(int));
+    stream_bufs[p].count = 0;
+    stream_bufs[p].req = MPI_REQUEST_NULL;
+    stream_bufs[p].active = 0;
+    pthread_mutex_init(&stream_locks[p], NULL);
+  }
+
+  stream_recv_cap = 1024 * 1024; // Start with 1MB recv buffer
+  stream_recv_buf = aligned_alloc_wrapper(stream_recv_cap * sizeof(int));
+}
+
+void free_stream_buffers(int size) {
+  if (!stream_bufs)
+    return;
+  for (int p = 0; p < size; p++) {
+    // Wait for any pending sends to complete before freeing!
+    if (stream_bufs[p].active) {
+      MPI_Wait(&stream_bufs[p].req, MPI_STATUS_IGNORE);
+    }
+    free(stream_bufs[p].primary);
+    free(stream_bufs[p].secondary);
+    pthread_mutex_destroy(&stream_locks[p]);
+  }
+  free(stream_bufs);
+  free(stream_recv_buf);
+  free(stream_locks);
+  stream_bufs = NULL;
+  stream_locks = NULL;
+}
+
+// Thread-safe push to global buffer
+static void push_to_global_locked(int target_rank, int *buf, int count,
+                                  MPI_Graph *g, int *labels, int my_offset,
+                                  int *next_frontier, int *next_frontier_size) {
+  if (count == 0)
+    return;
+
+  pthread_mutex_lock(&stream_locks[target_rank]);
+  StreamBuffer *sb = &stream_bufs[target_rank];
+
+  // Check if we need to flush current global buffer first
+  if (sb->count + count > sb->cap) {
+    // Must flush
+    if (sb->active) {
+      // If active send, we must wait or poll.
+      // Since we hold the lock, no one else can touch 'sb'.
+      int flag = 0;
+      while (!flag) {
+        MPI_Test(&sb->req, &flag, MPI_STATUS_IGNORE);
+        // Can we poll here?
+        // Since MPI_THREAD_MULTIPLE is on, yes.
+        // But poll_wrapper receives into GLOBAL stream_recv_buf.
+        // We need a lock for RECV too if we poll from multiple threads!
+        // Or we just wait. Blocking here harms concurrency.
+        // But 'sb->req' is specific to THIS destination.
+        // Let's just Loop-Test.
+      }
+      sb->active = 0;
+    }
+
+    // Swap and Send
+    int *tmp = sb->primary;
+    sb->primary = sb->secondary;
+    sb->secondary = tmp;
+
+    MPI_Isend(sb->secondary, sb->count, MPI_INT, target_rank, 1337,
+              MPI_COMM_WORLD, &sb->req);
+    ctx.total_sent += sb->count;
+    sb->active = 1;
+    sb->count = 0;
+  }
+
+  // Now append our data (SAFE: we made space or it fits)
+  // Wait, what if count > cap? (TLS buffer > Global buffer)
+  // We should ensure TLS buffer <= Global buffer cap.
+  // Assuming 2048 TLS << 50000 Global.
+
+  // Copy
+  memcpy(sb->primary + sb->count, buf, count * sizeof(int));
+  sb->count += count;
+
+  pthread_mutex_unlock(&stream_locks[target_rank]);
+}
+
 int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
   int rank = g->rank;
   int size = g->size;
@@ -1010,8 +1019,7 @@ int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
   int *labels = g->local_labels;
 
   if (rank == 0)
-    printf(
-        "Using Streaming Frontier BFS (Batch Size: 2048, Buffer: 200KB)...\n");
+    printf("Using Streaming Frontier BFS (Parallel Loop, TLS)...\n");
 
   memset(labels, 0, local_n * sizeof(int));
   int *frontier = aligned_alloc_wrapper(local_n * sizeof(int));
@@ -1019,9 +1027,14 @@ int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
   int frontier_size = 0;
   int next_frontier_size = 0;
 
-  // Init buffers: 50000 ints ~ 200KB per rank.
-  // For 128 ranks = 25MB total. Much better than 5GB.
   init_stream_buffers(size, 50000);
+
+  // Init TLS
+  int n_workers = 1;
+#ifdef __opencilk
+  n_workers = __cilkrts_get_nworkers();
+#endif
+  init_tls_stream_dyn(n_workers, size);
 
   int total_levels = 0;
 
@@ -1057,18 +1070,18 @@ int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
       ctx.total_sent = 0;
       ctx.total_recv = 0;
 
-      // Process frontier
-      // We can use cilk_for IF we protect the stream buffer access.
-      // But stream buffers are per-rank, not per-thread.
-      // So simple serial loop for now, or per-thread buffers (complex).
-      // Given the bottleneck is likely communication, serial processing of
-      // frontier is OK. Or we can use parallel pack like before? For
-      // simplicity/correctness first: Serial loop.
+      // Parallel Frontier Processing
+      cilk_for(int f = 0; f < frontier_size; f++) {
+        int tid = 0;
+#ifdef __opencilk
+        tid = __cilkrts_get_worker_number();
+#endif
 
-      for (int f = 0; f < frontier_size; f++) {
         int u = frontier[f];
         long long start = g->local_row_ptr[u];
         long long end = g->local_row_ptr[u + 1];
+
+        // Optimization: Prefetching could be added here
 
         for (long long e = start; e < end; e++) {
           int v = g->local_col_idx[e];
@@ -1076,24 +1089,52 @@ int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
 
           if (owner == rank) {
             int local_v = v - my_offset;
+            // Atomic check and set
             if (labels[local_v] == 0) {
-              labels[local_v] = component_id;
-              next_frontier[next_frontier_size++] = local_v;
+              // Check again with CAS if needed, or if 0 -> set
+              // If strict CC, we want exactly one setter.
+              // Assuming atomic_min trick or CAS
+              int expected = 0;
+              if (__atomic_compare_exchange_n(&labels[local_v], &expected,
+                                              component_id, 0, __ATOMIC_RELAXED,
+                                              __ATOMIC_RELAXED)) {
+                int idx = __atomic_fetch_add(&next_frontier_size, 1,
+                                             __ATOMIC_RELAXED);
+                next_frontier[idx] = local_v;
+              }
             }
           } else {
-            push_wrapper(owner, v, component_id, g, labels, my_offset,
-                         next_frontier, &next_frontier_size);
+            // Append to TLS
+            int cnt = tls_stream_dyn[tid].counts[owner];
+            if (cnt + 2 > tls_stream_dyn[tid].caps[owner]) {
+              // Push current TLS buffer to global
+              push_to_global_locked(owner, tls_stream_dyn[tid].buffers[owner],
+                                    cnt, g, labels, my_offset, next_frontier,
+                                    &next_frontier_size);
+              tls_stream_dyn[tid].counts[owner] = 0;
+              cnt = 0;
+            }
+            tls_stream_dyn[tid].buffers[owner][cnt] = v;
+            tls_stream_dyn[tid].buffers[owner][cnt + 1] = component_id;
+            tls_stream_dyn[tid].counts[owner] = cnt + 2;
           }
-        }
-
-        // Poll every 1024 vertices
-        if (f % 1024 == 0) {
-          poll_wrapper(g, labels, my_offset, next_frontier,
-                       &next_frontier_size);
         }
       }
 
-      // Flush
+      // Flush residual TLS buffers
+      for (int w = 0; w < n_workers; w++) {
+        for (int p = 0; p < size; p++) {
+          int cnt = tls_stream_dyn[w].counts[p];
+          if (cnt > 0) {
+            push_to_global_locked(p, tls_stream_dyn[w].buffers[p], cnt, g,
+                                  labels, my_offset, next_frontier,
+                                  &next_frontier_size);
+            tls_stream_dyn[w].counts[p] = 0;
+          }
+        }
+      }
+
+      // Flush Global Buffers
       flush_wrapper(size, g, labels, my_offset, next_frontier,
                     &next_frontier_size);
 
@@ -1103,17 +1144,10 @@ int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
 
       // Distributed Termination
       while (1) {
-        // Poll one more time before checking
         poll_wrapper(g, labels, my_offset, next_frontier, &next_frontier_size);
 
         long long stats[2] = {ctx.total_sent, ctx.total_recv};
         long long global_stats[2];
-
-        // We need Iallreduce to avoid blocking if someone is still sending?
-        // Actually, if we flushed, we are done sending for THIS phase.
-        // But someone else might still be sending to us.
-        // If we block in Allreduce, we can't recv! DEADLOCK!
-        // MUST use Iallreduce.
 
         MPI_Request req;
         MPI_Iallreduce(stats, global_stats, 2, MPI_LONG_LONG, MPI_SUM,
@@ -1129,10 +1163,6 @@ int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
 
         if (global_stats[0] == global_stats[1])
           break; // Done
-
-        // If not done, wait a bit and retry.
-        // In a real tight loop this floods the network with reductions.
-        // But we are polling inside.
       }
 
       // Swap
@@ -1146,6 +1176,7 @@ int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
     }
   }
 
+  free_tls_stream_dyn(n_workers, size);
   free_stream_buffers(size);
   free(frontier);
   free(next_frontier);
@@ -1462,6 +1493,7 @@ int mpi_init_graph(MPI_Graph *g, int n, const long long *row_ptr,
              MPI_STATUS_IGNORE);
   }
 
+  g->split_indices = NULL;
   return 0;
 }
 
@@ -1500,6 +1532,7 @@ int mpi_init_graph_distributed(MPI_Graph *g, int global_n, int local_n,
     perror("Failed to alloc labels");
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
+  g->split_indices = NULL;
   return 0;
 }
 
