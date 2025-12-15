@@ -39,6 +39,37 @@ static int cmp_int(const void *a, const void *b) {
   return (*(int *)a - *(int *)b);
 }
 
+// Insertion sort for small arrays (faster than qsort)
+static void insertion_sort(int *arr, int n) {
+  for (int i = 1; i < n; i++) {
+    int key = arr[i];
+    int j = i - 1;
+    while (j >= 0 && arr[j] > key) {
+      arr[j + 1] = arr[j];
+      j--;
+    }
+    arr[j + 1] = key;
+  }
+}
+
+// Sort array and remove duplicates in-place. Returns new count.
+static int sort_deduplicate_row(int *arr, int count) {
+  if (count <= 0)
+    return 0;
+  if (count < 32) {
+    insertion_sort(arr, count);
+  } else {
+    qsort(arr, count, sizeof(int), cmp_int);
+  }
+  int unique = 0;
+  for (int i = 0; i < count; i++) {
+    if (i == 0 || arr[i] != arr[i - 1]) {
+      arr[unique++] = arr[i];
+    }
+  }
+  return unique;
+}
+
 typedef struct {
   int id;
   int degree;
@@ -157,21 +188,7 @@ static void symmetrize_graph(CSR_info *csr) {
   cilk_for(int i = 0; i < n; i++) {
     long long start = new_row_ptr[i];
     int count = new_row_ptr[i + 1] - start;
-    if (count > 1) {
-      qsort(&temp_col_idx[start], count, sizeof(int), cmp_int);
-
-      // Remove duplicates
-      int unique = 0;
-      for (int j = 0; j < count; j++) {
-        if (j == 0 || temp_col_idx[start + j] != temp_col_idx[start + j - 1]) {
-          temp_col_idx[start + unique] = temp_col_idx[start + j];
-          unique++;
-        }
-      }
-      new_counts[i] = unique;
-    } else {
-      new_counts[i] = count;
-    }
+    new_counts[i] = sort_deduplicate_row(&temp_col_idx[start], count);
   }
 
   // Prefix sum for final row pointers
@@ -199,6 +216,222 @@ static void symmetrize_graph(CSR_info *csr) {
   csr->row_ptr = final_row_ptr;
   csr->col_idx = final_col_idx;
   csr->nzcount = final_nz;
+}
+
+// Reorder CSR graph by descending node degree (in-place)
+static void reorder_csr_by_degree(CSR_info *csr) {
+  int n = csr->nrows;
+
+  // 1. Compute permutation from degree
+  NodeDegree *nodes = malloc(n * sizeof(NodeDegree));
+  if (!nodes) {
+    printf("Reorder: alloc failed\n");
+    return;
+  }
+
+  cilk_for(int i = 0; i < n; i++) {
+    nodes[i].id = i;
+    nodes[i].degree = csr->row_ptr[i + 1] - csr->row_ptr[i];
+  }
+  qsort(nodes, n, sizeof(NodeDegree), cmp_degree_desc);
+
+  int *old_to_new = malloc(n * sizeof(int));
+  int *new_to_old = malloc(n * sizeof(int));
+  if (!old_to_new || !new_to_old) {
+    free(nodes);
+    free(old_to_new);
+    free(new_to_old);
+    printf("Reorder: alloc failed\n");
+    return;
+  }
+
+  cilk_for(int i = 0; i < n; i++) {
+    new_to_old[i] = nodes[i].id;
+    old_to_new[nodes[i].id] = i;
+  }
+  free(nodes);
+
+  // 2. Build new CSR
+  long long *new_row_ptr = aligned_alloc_wrapper((n + 1) * sizeof(long long));
+  int *new_col_idx = aligned_alloc_wrapper(csr->nzcount * sizeof(int));
+  if (!new_row_ptr || !new_col_idx) {
+    free(old_to_new);
+    free(new_to_old);
+    if (new_row_ptr)
+      free(new_row_ptr);
+    if (new_col_idx)
+      free(new_col_idx);
+    printf("Reorder: alloc failed\n");
+    return;
+  }
+
+  new_row_ptr[0] = 0;
+  for (int i = 0; i < n; i++) {
+    int old_u = new_to_old[i];
+    new_row_ptr[i + 1] =
+        new_row_ptr[i] + (csr->row_ptr[old_u + 1] - csr->row_ptr[old_u]);
+  }
+
+  cilk_for(int i = 0; i < n; i++) {
+    int old_u = new_to_old[i];
+    long long src = csr->row_ptr[old_u];
+    long long dst = new_row_ptr[i];
+    int cnt = csr->row_ptr[old_u + 1] - src;
+    for (int j = 0; j < cnt; j++) {
+      new_col_idx[dst + j] = old_to_new[csr->col_idx[src + j]];
+    }
+    sort_deduplicate_row(&new_col_idx[dst], cnt);
+  }
+
+  free(old_to_new);
+  free(new_to_old);
+  free(csr->row_ptr);
+  free(csr->col_idx);
+  csr->row_ptr = new_row_ptr;
+  csr->col_idx = new_col_idx;
+}
+
+// Memory-efficient combined Reorder + Symmetrize + Build
+static CSR_info build_reordered_symmetric_csr_from_arrays(int numrows,
+                                                          int ncols, int *ir,
+                                                          int *jc,
+                                                          int64_t nir) {
+  printf("Using Optimized Fast Path: Combined Reorder + Symmetrize...\n");
+
+  // 1. Calculate Estimated Degrees (A + A^T)
+  // We treat every entry in (ir, jc) as an undirected edge.
+  // If (u, v) exists, we add +1 to u's degree and +1 to v's degree.
+  // Duplicates (e.g. if symmetric input has u->v and v->u) will be handled by
+  // deduplication later.
+
+  int *degrees = calloc(numrows, sizeof(int));
+  if (!degrees)
+    return (CSR_info){0};
+
+  cilk_for(int c = 0; c < ncols; c++) {
+    for (int i = jc[c]; i < jc[c + 1]; i++) {
+      int r = ir[i];
+      if (r >= 0 && r < numrows) {
+        __atomic_fetch_add(&degrees[r], 1, __ATOMIC_RELAXED);
+        if (r != c) {
+          // If square matrix, c is also a row index
+          __atomic_fetch_add(&degrees[c], 1, __ATOMIC_RELAXED);
+        }
+      }
+    }
+  }
+
+  // 2. Generate Permutation (Sort by Degree Descending)
+  NodeDegree *nodes = malloc(numrows * sizeof(NodeDegree));
+  cilk_for(int i = 0; i < numrows; i++) {
+    nodes[i].id = i;
+    nodes[i].degree = degrees[i];
+  }
+
+  // Sort nodes to determine permutation
+  qsort(nodes, numrows, sizeof(NodeDegree), cmp_degree_desc);
+
+  int *old_to_new = malloc(numrows * sizeof(int));
+  int *new_to_old = malloc(numrows * sizeof(int));
+
+  cilk_for(int i = 0; i < numrows; i++) {
+    new_to_old[i] = nodes[i].id;
+    old_to_new[nodes[i].id] = i;
+  }
+
+  // Calculate new row pointers based on permuted degrees
+  // This is an UPPER BOUND on the edges (assuming all are unique).
+  long long *new_row_ptr =
+      aligned_alloc_wrapper((numrows + 1) * sizeof(long long));
+  new_row_ptr[0] = 0;
+
+  int *permuted_degrees = malloc(numrows * sizeof(int));
+  cilk_for(int i = 0; i < numrows; i++) {
+    permuted_degrees[i] =
+        degrees[nodes[i].id]; // Degree of the node that will be at i
+  }
+  free(nodes);
+  free(degrees); // Free old degrees
+
+  // Prefix sum for row pointers
+  for (int i = 0; i < numrows; i++) {
+    new_row_ptr[i + 1] = new_row_ptr[i] + permuted_degrees[i];
+  }
+  free(permuted_degrees);
+
+  long long max_nz = new_row_ptr[numrows];
+  int *new_col_idx = aligned_alloc_wrapper(max_nz * sizeof(int));
+
+  // 3. Fill Edges with Permutation
+  long long *offsets = calloc(numrows, sizeof(long long));
+
+  cilk_for(int c = 0; c < ncols; c++) {
+    int new_c = old_to_new[c];
+    for (int i = jc[c]; i < jc[c + 1]; i++) {
+      int r = ir[i];
+      if (r >= 0 && r < numrows) {
+        int new_r = old_to_new[r];
+
+        // Add mapping (new_r, new_c)
+        long long dest_r =
+            new_row_ptr[new_r] +
+            __atomic_fetch_add(&offsets[new_r], 1, __ATOMIC_RELAXED);
+        new_col_idx[dest_r] = new_c;
+
+        if (new_r != new_c) {
+          // Add mapping (new_c, new_r)
+          long long dest_c =
+              new_row_ptr[new_c] +
+              __atomic_fetch_add(&offsets[new_c], 1, __ATOMIC_RELAXED);
+          new_col_idx[dest_c] = new_r;
+        }
+      }
+    }
+  }
+  free(offsets);
+  free(old_to_new);
+  // new_to_old is usually lost here, unless we wanted to save the permutation.
+  // The current mat_to_csr doesn't save the permutation mapping to disk, so we
+  // free it.
+  free(new_to_old);
+
+  // 4. Sort, Deduplicate, and Compact
+  int *final_row_counts = calloc(numrows, sizeof(int));
+
+  cilk_for(int i = 0; i < numrows; i++) {
+    long long start = new_row_ptr[i];
+    int count = new_row_ptr[i + 1] - start;
+    final_row_counts[i] = sort_deduplicate_row(&new_col_idx[start], count);
+  }
+
+  // Final Row Pointers
+  long long *final_row_ptr =
+      aligned_alloc_wrapper((numrows + 1) * sizeof(long long));
+  final_row_ptr[0] = 0;
+  for (int i = 0; i < numrows; i++) {
+    final_row_ptr[i + 1] = final_row_ptr[i] + final_row_counts[i];
+  }
+
+  long long final_nz = final_row_ptr[numrows];
+  int *final_col_idx = aligned_alloc_wrapper(final_nz * sizeof(int));
+
+  // Copy compacted
+  cilk_for(int i = 0; i < numrows; i++) {
+    long long src_start = new_row_ptr[i];
+    long long dest_start = final_row_ptr[i];
+    int count = final_row_counts[i];
+    memcpy(&final_col_idx[dest_start], &new_col_idx[src_start],
+           count * sizeof(int));
+  }
+
+  free(new_row_ptr);
+  free(new_col_idx);
+  free(final_row_counts);
+
+  return (CSR_info){.nrows = numrows,
+                    .nzcount = final_nz,
+                    .row_ptr = final_row_ptr,
+                    .col_idx = final_col_idx};
 }
 
 static char *csr_cache_filename(const char *matfile) {
@@ -281,46 +514,117 @@ static CSR_info read_csr_bin(const char *fname) {
 // Must link with -lhdf5
 #include <hdf5.h>
 
-static CSR_info try_read_hdf5(const char *fname) {
-  // Turn off HDF5 error printing to avoid spam if not an HDF5 file
-  H5Eset_auto(H5E_DEFAULT, NULL, NULL);
+// HDF5 Chunked Reading Helper
+typedef struct {
+  hid_t dset_id;
+  hid_t type_id;
+  size_t type_size;
+  hsize_t total_elems;
+  hsize_t current_idx;
+  size_t buffer_size; // Elements per chunk
+  void *buffer;
+  hsize_t buffer_end_idx; // Exclusive
+  hsize_t buffer_curr_local_idx;
+} H5Streamer;
 
-  if (!H5Fis_hdf5(fname)) {
-    return (CSR_info){0};
+static int h5_streamer_init(H5Streamer *s, hid_t dset_id, hid_t type_id,
+                            size_t buffer_size) {
+  s->dset_id = dset_id;
+  s->type_id = type_id;
+  s->type_size = H5Tget_size(type_id);
+
+  hid_t space_id = H5Dget_space(dset_id);
+  s->total_elems = H5Sget_simple_extent_npoints(space_id);
+  H5Sclose(space_id);
+
+  s->buffer_size = buffer_size;
+  s->current_idx = 0;
+
+  s->buffer = malloc(buffer_size * s->type_size);
+  if (!s->buffer)
+    return -1;
+
+  // Initial fetch
+  s->buffer_end_idx = 0;
+  s->buffer_curr_local_idx = 0;
+  return 0;
+}
+
+static void h5_streamer_close(H5Streamer *s) {
+  if (s->buffer)
+    free(s->buffer);
+}
+
+// Fetch next element (int). Buffers behind the scenes.
+// Returns -1 on EOF or error (assuming all valid values are >= 0)
+// This is specific for 'ir' (int) streaming.
+static inline int h5_streamer_next_int(H5Streamer *s) {
+  // Check if we need to refill buffer
+  if (s->buffer_curr_local_idx >= (s->buffer_end_idx - s->current_idx)) {
+    // Refill
+    if (s->current_idx + (s->buffer_end_idx - s->current_idx) >=
+        s->total_elems) {
+      return -1; // EOF
+    }
+
+    s->current_idx = s->buffer_end_idx;
+    hsize_t count = s->buffer_size;
+    if (s->current_idx + count > s->total_elems) {
+      count = s->total_elems - s->current_idx;
+    }
+
+    // Select hyperslab
+    hid_t memspace = H5Screate_simple(1, &count, NULL);
+    hid_t filespace = H5Dget_space(s->dset_id);
+    H5Sselect_hyperslab(filespace, H5S_SELECT_SET, &s->current_idx, NULL,
+                        &count, NULL);
+
+    if (H5Dread(s->dset_id, s->type_id, memspace, filespace, H5P_DEFAULT,
+                s->buffer) < 0) {
+      H5Sclose(memspace);
+      H5Sclose(filespace);
+      return -2; // Error
+    }
+
+    H5Sclose(memspace);
+    H5Sclose(filespace);
+
+    s->buffer_end_idx = s->current_idx + count;
+    s->buffer_curr_local_idx = 0;
   }
 
-  printf("HDF5: Detected MAT v7.3 file. Using direct low-memory reader...\n");
+  int val = ((int *)s->buffer)[s->buffer_curr_local_idx++];
+  return val;
+}
+
+static CSR_info try_read_hdf5_chunked(const char *fname) {
+  H5Eset_auto(H5E_DEFAULT, NULL, NULL);
+  if (!H5Fis_hdf5(fname))
+    return (CSR_info){0};
+
+  printf("HDF5: Detected MAT v7.3 file. Using Two-Pass Chunked Streamer...\n");
 
   hid_t file_id = H5Fopen(fname, H5F_ACC_RDONLY, H5P_DEFAULT);
   if (file_id < 0)
     return (CSR_info){0};
 
-  // Open dataset. struct Problem -> A
-  // In MAT 7.3, structs are groups.
   hid_t group_id = H5Gopen(file_id, "Problem", H5P_DEFAULT);
   if (group_id < 0) {
     H5Fclose(file_id);
     return (CSR_info){0};
   }
 
-  // Read A. In MAT 7.3, A might be a Dataset or a Group depending on
-  // sparse/dense? For sparse, 'A' is usually a Group containing 'ir', 'jc',
-  // 'data'.
   hid_t a_id = H5Gopen(group_id, "A", H5P_DEFAULT);
-  // Check if open failed (might be dataset if old format? no 7.3 uses groups
-  // for sparse)
   if (a_id < 0) {
     H5Gclose(group_id);
     H5Fclose(file_id);
     return (CSR_info){0};
   }
 
-  // Read dimensions (jc size -> ncols, ir size -> nnz)
   hid_t ir_dset = H5Dopen(a_id, "ir", H5P_DEFAULT);
   hid_t jc_dset = H5Dopen(a_id, "jc", H5P_DEFAULT);
 
   if (ir_dset < 0 || jc_dset < 0) {
-    printf("HDF5: Could not find 'ir' or 'jc' datasets inside Problem.A\n");
     if (ir_dset >= 0)
       H5Dclose(ir_dset);
     if (jc_dset >= 0)
@@ -335,74 +639,163 @@ static CSR_info try_read_hdf5(const char *fname) {
   hid_t ir_space = H5Dget_space(ir_dset);
   hid_t jc_space = H5Dget_space(jc_dset);
 
-  // Check rank and initialize safely
-  int ir_rank = H5Sget_simple_extent_ndims(ir_space);
-  int jc_rank = H5Sget_simple_extent_ndims(jc_space);
-
-  hsize_t ir_dims[2] = {1, 1};
-  hsize_t jc_dims[2] = {1, 1};
-
-  H5Sget_simple_extent_dims(ir_space, ir_dims, NULL);
-  H5Sget_simple_extent_dims(jc_space, jc_dims, NULL);
-
-  // Calculate size based on rank
-  long long nnz = (long long)ir_dims[0];
-  if (ir_rank > 1)
-    nnz *= (long long)ir_dims[1];
-
-  long long n_col_ptrs = (long long)jc_dims[0];
-  if (jc_rank > 1)
-    n_col_ptrs *= (long long)jc_dims[1];
-
-  // For symmetric graph CSC, n_col_ptrs = nrows + 1
+  hsize_t nnz = H5Sget_simple_extent_npoints(ir_space);
+  hsize_t n_col_ptrs = H5Sget_simple_extent_npoints(jc_space);
   int nrows = (int)(n_col_ptrs - 1);
+  int ncols = nrows; // Assume square symmetric
 
-  printf("HDF5: Rows: %d, NNZ: %lld\n", nrows, nnz);
+  printf("HDF5 Streaming: Rows/Cols: %d, NNZ: %llu\n", nrows,
+         (unsigned long long)nnz);
 
-  // Allocate Memory
-  CSR_info csr;
-  csr.nrows = nrows;
-  csr.nzcount = nnz;
-  csr.row_ptr = aligned_alloc_wrapper((nrows + 1) * sizeof(long long));
-  csr.col_idx = aligned_alloc_wrapper(nnz * sizeof(int));
-
-  if (!csr.row_ptr || !csr.col_idx) {
-    printf("HDF5: Memory allocation failed!\n");
-    H5Sclose(ir_space);
-    H5Sclose(jc_space);
-    H5Dclose(ir_dset);
-    H5Dclose(jc_dset);
-    H5Gclose(a_id);
-    H5Gclose(group_id);
-    H5Fclose(file_id);
-    clean_csr_vectors(csr);
+  // Load JC fully (pointer array is usually manageable, ~520MB for Friendster)
+  // If this is too large, we would need 2-level streaming, but let's assume it
+  // fits.
+  printf("HDF5: Loading Col Ptrs (jc)...\n");
+  long long *jc = aligned_alloc_wrapper(n_col_ptrs * sizeof(long long));
+  if (H5Dread(jc_dset, H5T_NATIVE_LLONG, H5S_ALL, H5S_ALL, H5P_DEFAULT, jc) <
+      0) {
+    free(jc);
     return (CSR_info){0};
   }
 
-  // Read Data
-  // ir -> col_idx (int)
-  // MAT 'ir' is usually uint64 or double depending on version, but HDF5
-  // converts. Check type? Assume we want to read into int.
-  printf("HDF5: Reading structure... ");
-  fflush(stdout);
+  // --- PASS 1: Calculate Degrees ---
+  printf("HDF5: Pass 1 - Calculating Degrees (Streaming ir)...\n");
 
-  if (H5Dread(ir_dset, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-              csr.col_idx) < 0) {
-    printf("Failed to read ir\n");
-    clean_csr_vectors(csr);
-    csr.nzcount = 0;
+  int *degrees = calloc(nrows, sizeof(int));
+  if (!degrees) {
+    free(jc);
+    return (CSR_info){0};
   }
 
-  // jc -> row_ptr (long long)
-  // HDF5 will convert whatever type is on disk to long long for us.
-  if (csr.nzcount > 0 && H5Dread(jc_dset, H5T_NATIVE_LLONG, H5S_ALL, H5S_ALL,
-                                 H5P_DEFAULT, csr.row_ptr) < 0) {
-    printf("Failed to read jc\n");
-    clean_csr_vectors(csr);
-    csr.nzcount = 0;
+  H5Streamer ir_streamer;
+  // 128MB chunk for ir (int) -> 32M integers
+  if (h5_streamer_init(&ir_streamer, ir_dset, H5T_NATIVE_INT,
+                       32 * 1024 * 1024) != 0) {
+    free(jc);
+    free(degrees);
+    return (CSR_info){0};
   }
 
-  printf("Done.\n");
+  // Stream through all columns
+  for (int c = 0; c < ncols; c++) {
+    long long start = jc[c];
+    long long end = jc[c + 1];
+    long long count = end - start;
+
+    for (long long k = 0; k < count; k++) {
+      int r = h5_streamer_next_int(&ir_streamer);
+      if (r < 0)
+        break; // Error or EOF premature
+
+      degrees[r]++;
+      if (r != c)
+        degrees[c]++;
+    }
+  }
+
+  h5_streamer_close(&ir_streamer); // Reset streamer
+
+  // --- Sort & Permute ---
+  printf("HDF5: Calculating Permutation...\n");
+  NodeDegree *nodes = malloc(nrows * sizeof(NodeDegree));
+  cilk_for(int i = 0; i < nrows; i++) {
+    nodes[i].id = i;
+    nodes[i].degree = degrees[i];
+  }
+  qsort(nodes, nrows, sizeof(NodeDegree), cmp_degree_desc);
+
+  int *old_to_new = malloc(nrows * sizeof(int));
+  cilk_for(int i = 0; i < nrows; i++) { old_to_new[nodes[i].id] = i; }
+
+  long long *new_row_ptr =
+      aligned_alloc_wrapper((nrows + 1) * sizeof(long long));
+  new_row_ptr[0] = 0;
+  int *permuted_degrees = malloc(nrows * sizeof(int));
+  cilk_for(int i = 0; i < nrows; i++) {
+    permuted_degrees[i] = degrees[nodes[i].id];
+  }
+  free(nodes);
+  free(degrees);
+
+  for (int i = 0; i < nrows; i++) {
+    new_row_ptr[i + 1] = new_row_ptr[i] + permuted_degrees[i];
+  }
+  free(permuted_degrees);
+
+  long long final_nz = new_row_ptr[nrows];
+  int *new_col_idx = aligned_alloc_wrapper(final_nz * sizeof(int));
+  long long *offsets = calloc(nrows, sizeof(long long));
+
+  // --- PASS 2: Build Graph ---
+  printf("HDF5: Pass 2 - Building Graph (Streaming ir)...\n");
+
+  // Re-init streamer at start
+  h5_streamer_init(&ir_streamer, ir_dset, H5T_NATIVE_INT, 32 * 1024 * 1024);
+
+  // NOTE: HDF5 Streaming is inherently forcing serial execution of the
+  // 'fetching' part. We can't parallelize the loop over 'c' easily without
+  // multiple independent readers/cursors. However, the bottleneck is IO/Memory,
+  // so serial reading is fine. We can still write to 'new_col_idx' in parallel
+  // if we buffered the reads, but standard loop is fine.
+
+  for (int c = 0; c < ncols; c++) {
+    long long start = jc[c];
+    long long end = jc[c + 1];
+    long long count = end - start;
+    int new_c = old_to_new[c];
+
+    for (long long k = 0; k < count; k++) {
+      int r = h5_streamer_next_int(&ir_streamer);
+      if (r >= 0 && r < nrows) {
+        int new_r = old_to_new[r];
+
+        // Add (new_r, new_c)
+        long long dest_r = new_row_ptr[new_r] + offsets[new_r]++;
+        new_col_idx[dest_r] = new_c;
+
+        if (new_r != new_c) {
+          long long dest_c = new_row_ptr[new_c] + offsets[new_c]++;
+          new_col_idx[dest_c] = new_r;
+        }
+      }
+    }
+  }
+  h5_streamer_close(&ir_streamer);
+  free(offsets);
+  free(old_to_new);
+  free(jc); // Done with raw JC
+
+  // --- Sort & Deduplicate ---
+  printf("HDF5: Sorting and Compacting...\n");
+  int *final_row_counts = calloc(nrows, sizeof(int));
+
+  cilk_for(int i = 0; i < nrows; i++) {
+    long long start = new_row_ptr[i];
+    int count = new_row_ptr[i + 1] - start;
+    final_row_counts[i] = sort_deduplicate_row(&new_col_idx[start], count);
+  }
+
+  long long *final_row_ptr =
+      aligned_alloc_wrapper((nrows + 1) * sizeof(long long));
+  final_row_ptr[0] = 0;
+  for (int i = 0; i < nrows; i++) {
+    final_row_ptr[i + 1] = final_row_ptr[i] + final_row_counts[i];
+  }
+
+  final_nz = final_row_ptr[nrows];
+  int *final_col_idx = aligned_alloc_wrapper(final_nz * sizeof(int));
+
+  cilk_for(int i = 0; i < nrows; i++) {
+    long long src_start = new_row_ptr[i];
+    long long dest_start = final_row_ptr[i];
+    int count = final_row_counts[i];
+    memcpy(&final_col_idx[dest_start], &new_col_idx[src_start],
+           count * sizeof(int));
+  }
+
+  free(new_row_ptr);
+  free(new_col_idx);
+  free(final_row_counts);
 
   H5Sclose(ir_space);
   H5Sclose(jc_space);
@@ -412,7 +805,10 @@ static CSR_info try_read_hdf5(const char *fname) {
   H5Gclose(group_id);
   H5Fclose(file_id);
 
-  return csr;
+  return (CSR_info){.nrows = nrows,
+                    .nzcount = final_nz,
+                    .row_ptr = final_row_ptr,
+                    .col_idx = final_col_idx};
 }
 
 CSR_info mat_to_csr(char *file_name) {
@@ -430,67 +826,25 @@ CSR_info mat_to_csr(char *file_name) {
       /* read failed, continue to build */
     }
 
-    // Try HDF5 Reader first for V7.3 files (Low Memory Path)
-    CSR_info h5_csr = try_read_hdf5(file_name);
+    // Try HDF5 Reader for v7.3 MAT files (Low Memory Path)
+    CSR_info h5_csr = try_read_hdf5_chunked(file_name);
     if (h5_csr.nzcount > 0) {
-      printf("Successfully loaded via HDF5 Direct Reader.\n");
-      // We still need to assume symmetric logic or check it if loaded from HDF5
-      // Reusing the logic below would require refactoring.
-      // For now, let's inject it here and skip MATIO.
+      printf("Successfully loaded via HDF5 Two-Pass Streaming.\n");
+      // The chunked loader already does reordering and symmetrization
+      // So we just return it.
 
-      CSR_info csr = h5_csr;
-
-      // --- REUSED POST-PROCESSING LOGIC FROM BELOW ---
-      // Sort rows (needed because 'ir' in MAT might not be sorted, though
-      // usually is)
-      /* HDF5 reader raw dump. CSC columns are sorted by definition in MATLAB?
-         Usually yes. But let's allow the qsort to run to be safe. */
-
-      cilk_for(int i = 0; i < csr.nrows; i++) {
-        long long start = csr.row_ptr[i];
-        long long count = csr.row_ptr[i + 1] - start;
-        if (count > 1) {
-          qsort(&csr.col_idx[start], count, sizeof(int), cmp_int);
-        }
-      }
-
-      // Symmetry Check
-      char *env_sym = getenv("BFS_ASSUME_SYMMETRIC");
-      int assume_symmetric = (env_sym && atoi(env_sym) == 1);
-      if (assume_symmetric) {
-        printf("BFS_ASSUME_SYMMETRIC=1: Skipping symmetry check.\n");
-      } else {
-        if (!is_symmetric(&csr)) {
-          printf("Graph not symmetric. Symmetrizing...\n");
-          symmetrize_graph(&csr);
-          printf("Symmetrized NZ: %lld\n", csr.nzcount);
-        }
-      }
-
-      // Reordering
-      char *env_reorder = getenv("BFS_SKIP_REORDER");
-      int skip_reorder = (env_reorder && atoi(env_reorder) == 1);
-      if (!skip_reorder) {
-        printf("Reordering...\n");
-        // ... Call reorder logic ...
-        // Duplicate logic here is messy.
-        // Ideally we should just return `csr` here and let the caller handle
-        // it, or jump to a label. GOTO LABEL: "processing_start"
-      } else {
-        printf("BFS_SKIP_REORDER=1: Skipping reordering.\n");
-      }
-
-      // Write Cache
-      if (write_csr_bin(cache, &csr) == 0) {
+      // Write to cache
+      if (write_csr_bin(cache, &h5_csr) == 0) {
         printf("Wrote CSR cache %s\n", cache);
       }
       free(cache);
-      return csr;
+      return h5_csr;
     }
-    // HDF5 failed (maybe not v7.3), fall back to MATIO
-
-    free(cache);
+    // If HDF5 failed, it returns empty and we fall through to MATIO
   }
+
+  // HDF5 failed (maybe not v7.3), fall back to MATIO
+  free(cache);
 
   // Re-alloc cache name for MATIO path
   cache = csr_cache_filename(file_name);
@@ -610,211 +964,126 @@ CSR_info mat_to_csr(char *file_name) {
     // If file open failed, fall back to standard path
   }
 
-  // Save row pointer and column index data in CSR_info object
-  CSR_info csr;
+  // Optimize: Use Fast Path if env vars allow (Default ON)
+  CSR_info csr = {0, 0, NULL, NULL};
+  int skip_reorder =
+      (getenv("BFS_SKIP_REORDER") && atoi(getenv("BFS_SKIP_REORDER")) == 1);
+  int skip_symmetric = (getenv("BFS_ASSUME_SYMMETRIC") &&
+                        atoi(getenv("BFS_ASSUME_SYMMETRIC")) == 1);
 
-  csr.row_ptr = (long long *)aligned_alloc_wrapper((size_t)(numrows + 1) *
-                                                   sizeof(long long));
-  if (csr.row_ptr)
-    memset(csr.row_ptr, 0, (size_t)(numrows + 1) * sizeof(long long));
+  if (!skip_reorder && !skip_symmetric) {
+    // Fast path: Unified Symmetrization + Reordering
+    csr = build_reordered_symmetric_csr_from_arrays(numrows, ncols, row_ind,
+                                                    col_ptr, sparse->nir);
 
-  // Parallel count nonzeros per row (atomic increments)
-  int *row_counts = (int *)calloc((size_t)numrows, sizeof(int));
-  if (!row_counts) {
+    // Cleanup Matio
     Mat_VarFree(projectvar);
     Mat_Close(matfp);
-    return (CSR_info){1, 1, NULL, NULL};
-  }
+  } else {
+    // Legacy Path (Slow)
 
-  cilk_for(int c = 0; c < ncols; ++c) {
-    for (int i = col_ptr[c]; i < col_ptr[c + 1]; ++i) {
-      int r = row_ind[i];
-      if (r >= 0 && r < numrows) {
-        __atomic_fetch_add(&row_counts[r], 1, __ATOMIC_RELAXED);
+    // ... (Original logic kept as fallback) ...
+
+    csr.row_ptr = (long long *)aligned_alloc_wrapper((size_t)(numrows + 1) *
+                                                     sizeof(long long));
+    if (csr.row_ptr)
+      memset(csr.row_ptr, 0, (size_t)(numrows + 1) * sizeof(long long));
+
+    // Parallel count nonzeros per row (atomic increments)
+    int *row_counts = (int *)calloc((size_t)numrows, sizeof(int));
+    if (!row_counts) {
+      Mat_VarFree(projectvar);
+      Mat_Close(matfp);
+      return (CSR_info){1, 1, NULL, NULL};
+    }
+
+    cilk_for(int c = 0; c < ncols; ++c) {
+      for (int i = col_ptr[c]; i < col_ptr[c + 1]; ++i) {
+        int r = row_ind[i];
+        if (r >= 0 && r < numrows) {
+          __atomic_fetch_add(&row_counts[r], 1, __ATOMIC_RELAXED);
+        }
       }
     }
-  }
 
-  // Build row_ptr via prefix sum (sequential)
-  csr.row_ptr[0] = 0;
-  for (int i = 0; i < numrows; ++i) {
-    csr.row_ptr[i + 1] = csr.row_ptr[i] + row_counts[i];
-  }
+    // Build row_ptr via prefix sum (sequential)
+    csr.row_ptr[0] = 0;
+    for (int i = 0; i < numrows; ++i) {
+      csr.row_ptr[i + 1] = csr.row_ptr[i] + row_counts[i];
+    }
 
-  // Define non-zeros and rows count
-  csr.nzcount = csr.row_ptr[numrows];
-  csr.nrows = numrows;
+    // Define non-zeros and rows count
+    csr.nzcount = csr.row_ptr[numrows];
+    csr.nrows = numrows;
 
-  printf("Number of nonzeros: %lld\n", csr.nzcount);
+    printf("Number of nonzeros: %lld\n", csr.nzcount);
 
-  // Define col_idx
-  csr.col_idx = (int *)aligned_alloc_wrapper(csr.nzcount * sizeof(int));
+    // Define col_idx
+    csr.col_idx = (int *)aligned_alloc_wrapper(csr.nzcount * sizeof(int));
 
-  long long *pos = (long long *)malloc((size_t)numrows * sizeof(long long));
-  if (!pos) {
+    long long *pos = (long long *)malloc((size_t)numrows * sizeof(long long));
+    if (!pos) {
+      free(row_counts);
+      Mat_VarFree(projectvar);
+      Mat_Close(matfp);
+      clean_csr_vectors(csr);
+      return (CSR_info){1, 1, NULL, NULL};
+    }
+    for (int i = 0; i < numrows; ++i)
+      pos[i] = csr.row_ptr[i];
+
+    // Fill col_idx in parallel; reserve positions via atomic fetch-add
+    cilk_for(int c = 0; c < ncols; ++c) {
+      for (int j = col_ptr[c]; j < col_ptr[c + 1]; ++j) {
+        int r = row_ind[j];
+        if (r < 0 || r >= numrows)
+          continue;
+        long long dest = __atomic_fetch_add(&pos[r], 1, __ATOMIC_RELAXED);
+        csr.col_idx[dest] = c;
+      }
+    }
+
     free(row_counts);
+    free(pos);
+
+    // Free MATIO memory immediately to reduce peak usage
     Mat_VarFree(projectvar);
     Mat_Close(matfp);
-    clean_csr_vectors(csr);
-    return (CSR_info){1, 1, NULL, NULL};
-  }
-  for (int i = 0; i < numrows; ++i)
-    pos[i] = csr.row_ptr[i];
 
-  // Fill col_idx in parallel; reserve positions via atomic fetch-add
-  cilk_for(int c = 0; c < ncols; ++c) {
-    for (int j = col_ptr[c]; j < col_ptr[c + 1]; ++j) {
-      int r = row_ind[j];
-      if (r < 0 || r >= numrows)
-        continue;
-      long long dest = __atomic_fetch_add(&pos[r], 1, __ATOMIC_RELAXED);
-      csr.col_idx[dest] = c;
+    // Sort rows to enable binary search and efficient processing
+    cilk_for(int i = 0; i < numrows; i++) {
+      int start = csr.row_ptr[i];
+      int count = csr.row_ptr[i + 1] - start;
+      sort_deduplicate_row(&csr.col_idx[start], count); // Sort only (no dupes)
     }
-  }
 
-  free(row_counts);
-  free(pos);
+    // Check symmetry and symmetrize if needed
+    // The declaration of env_sym and assume_symmetric has been moved up.
 
-  // Free MATIO memory immediately to reduce peak usage
-  Mat_VarFree(projectvar);
-  Mat_Close(matfp);
-
-  // Sort rows to enable binary search and efficient processing
-  cilk_for(int i = 0; i < numrows; i++) {
-    int start = csr.row_ptr[i];
-    int count = csr.row_ptr[i + 1] - start;
-    if (count > 1) {
-      qsort(&csr.col_idx[start], count, sizeof(int), cmp_int);
-    }
-  }
-
-  // Check symmetry and symmetrize if needed
-  // The declaration of env_sym and assume_symmetric has been moved up.
-
-  if (assume_symmetric) {
-    printf("BFS_ASSUME_SYMMETRIC=1: Skipping symmetry check and "
-           "symmetrization.\n");
-  } else {
-    printf("Checking symmetry...\n");
-    if (!is_symmetric(&csr)) {
-      printf("Graph is not symmetric. Symmetrizing...\n");
-      symmetrize_graph(&csr);
-      printf("Symmetrization complete. New edges: %lld\n", csr.nzcount);
+    if (assume_symmetric) {
+      printf("BFS_ASSUME_SYMMETRIC=1: Skipping symmetry check and "
+             "symmetrization.\n");
     } else {
-      printf("Graph is symmetric.\n");
-    }
-  }
-
-  // Optimization: Graph Reordering (Degree Descending)
-  char *env_reorder = getenv("BFS_SKIP_REORDER");
-  if (env_reorder && atoi(env_reorder) == 1) {
-    printf("BFS_SKIP_REORDER=1: Skipping graph reordering.\n");
-  } else {
-    printf("Reordering graph (Degree Descending)...\n");
-
-    // 1. Calculate degrees and create permutation
-    NodeDegree *nodes = malloc(csr.nrows * sizeof(NodeDegree));
-    if (nodes) {
-      cilk_for(int i = 0; i < csr.nrows; i++) {
-        nodes[i].id = i;
-        nodes[i].degree = csr.row_ptr[i + 1] - csr.row_ptr[i];
-      }
-
-      // Sort by degree descending
-      qsort(nodes, csr.nrows, sizeof(NodeDegree), cmp_degree_desc);
-
-      // 2. Build permutation maps
-      int *old_to_new = malloc(csr.nrows * sizeof(int));
-      int *new_to_old = malloc(csr.nrows * sizeof(int));
-
-      if (old_to_new && new_to_old) {
-        cilk_for(int i = 0; i < csr.nrows; i++) {
-          new_to_old[i] = nodes[i].id;
-          old_to_new[nodes[i].id] = i;
-        }
-        free(nodes); // Done with nodes array
-
-        // 3. Build new CSR
-        long long *new_row_ptr =
-            aligned_alloc_wrapper((size_t)(csr.nrows + 1) * sizeof(long long));
-        int *new_col_idx =
-            aligned_alloc_wrapper((size_t)csr.nzcount * sizeof(int));
-
-        if (new_row_ptr && new_col_idx) {
-          new_row_ptr[0] = 0;
-
-          // Calculate new row pointers
-          int *new_degrees = malloc(csr.nrows * sizeof(int));
-          cilk_for(int i = 0; i < csr.nrows; i++) {
-            int old_u = new_to_old[i];
-            new_degrees[i] = csr.row_ptr[old_u + 1] - csr.row_ptr[old_u];
-          }
-
-          for (int i = 0; i < csr.nrows; i++) {
-            new_row_ptr[i + 1] = new_row_ptr[i] + new_degrees[i];
-          }
-          free(new_degrees);
-
-          // Fill new col_idx
-          cilk_for(int i = 0; i < csr.nrows; i++) {
-            int old_u = new_to_old[i];
-            long long start_old = csr.row_ptr[old_u];
-            long long end_old = csr.row_ptr[old_u + 1];
-
-            long long start_new = new_row_ptr[i];
-
-            for (int j = 0; j < (end_old - start_old); j++) {
-              int old_v = csr.col_idx[start_old + j];
-              int new_v = old_to_new[old_v];
-              new_col_idx[start_new + j] = new_v;
-            }
-
-            // Sort neighbors in new_col_idx to maintain sorted property
-            if (end_old - start_old > 1) {
-              qsort(&new_col_idx[start_new], end_old - start_old, sizeof(int),
-                    cmp_int);
-            }
-          }
-
-          // Replace CSR
-          free(csr.row_ptr);
-          free(csr.col_idx);
-          csr.row_ptr = new_row_ptr;
-          csr.col_idx = new_col_idx;
-
-          printf("Graph reordering complete.\n");
-        } else {
-          printf("Failed to allocate memory for reordered graph.\n");
-          if (new_row_ptr)
-            free(new_row_ptr);
-          if (new_col_idx)
-            free(new_col_idx);
-        }
-        free(old_to_new);
-        free(new_to_old);
+      printf("Checking symmetry...\n");
+      if (!is_symmetric(&csr)) {
+        printf("Graph not symmetric. Symmetrizing...\n");
+        symmetrize_graph(&csr);
+        printf("Symmetrization complete. New edges: %lld\n", csr.nzcount);
       } else {
-        printf("Failed to allocate permutation arrays.\n");
-        if (old_to_new)
-          free(old_to_new);
-        if (new_to_old)
-          free(new_to_old);
-        if (nodes)
-          free(nodes);
+        printf("Graph is symmetric.\n");
       }
+    }
+
+    // Optimization: Graph Reordering (Degree Descending)
+    char *env_reorder = getenv("BFS_SKIP_REORDER");
+    if (env_reorder && atoi(env_reorder) == 1) {
+      printf("BFS_SKIP_REORDER=1: Skipping graph reordering.\n");
     } else {
-      printf("Failed to allocate nodes array for sorting.\n");
+      printf("Reordering graph (Degree Descending)...\n");
+      reorder_csr_by_degree(&csr);
+      printf("Graph reordering complete.\n");
     }
   }
-
-  // Cleanup dynamically allocated used vectors
-
-  /*
-  //Part for deleting the original .mat file from repo
-  if (remove(mat_filename) == 0)
-      printf("Deleted %s successfully.\n", mat_filename);
-  else
-      perror("Error deleting file");
-  */
 
   printf("Your .mat to CSR format in .bin files conversion complete.\n");
 

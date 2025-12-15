@@ -1,27 +1,28 @@
 #!/bin/bash
 #SBATCH --partition=rome
-#SBATCH --time=00:02:00
-#SBATCH --job-name=MPI_Test3_4Node
-#SBATCH --nodes=3
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=48
-#SBATCH --mem=50GB
-#SBATCH --output="Slurm output/test3_4node_%j.out"
+#SBATCH --time=00:30:00
+#SBATCH --job-name=Friendster_4Node
+#SBATCH --nodes=4
+#SBATCH --ntasks-per-node=8
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64GB
+#SBATCH --output="../Slurm output/friendster_4node_%j.out"
 
 # --- Optimizations ---
 export BFS_ZERO_PLANTING=1
 export BFS_HUB_PUSH=1
+export BFS_USE_STREAMING_FRONTIER=1
 export BFS_DISTRIBUTED=1
 export BFS_HYBRID_PACKING=1
 export BFS_PREFETCH_DIST=16
+export BFS_ASSUME_SYMMETRIC=1  # Friendster is symmetric, skip expensive check
+export BFS_SKIP_REORDER=0      # Use reordering for better BFS performance
 
-# --- Environment Setup (Relative to Script) ---
+# --- Environment Setup ---
 if [ -n "$SLURM_SUBMIT_DIR" ]; then
-    # If running via sbatch, use the submission directory (Project2/Tests) to find root
-    PROJECT_ROOT="$(dirname "$SLURM_SUBMIT_DIR")"
+    PROJECT_ROOT="$(dirname "$(dirname "$(dirname "$SLURM_SUBMIT_DIR")")")"
 else
-    # Fallback for local execution
-    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 fi
 
 echo "=========================================="
@@ -30,11 +31,8 @@ echo "=========================================="
 echo "Job ID:        $SLURM_JOB_ID"
 echo "Job Name:      $SLURM_JOB_NAME"
 echo "Node Count:    $SLURM_JOB_NUM_NODES"
-echo "Tasks/Node:    $SLURM_NTASKS_PER_NODE"
-echo "CPUs/Task:     $SLURM_CPUS_PER_TASK"
-echo "Memory/Node:   50GB"
-echo "Date:          $(date)"
-echo "Description:   High Performance (4 Nodes, 48 Core, 50GB)"
+echo "Memory/Node:   64GB"
+echo "Description:   Friendster 4 Node Strong Scaling (Hybrid: 32 MPI x 16 Cilk)"
 echo "=========================================="
 
 # Load modules
@@ -58,17 +56,14 @@ echo "Building project in $PROJECT_ROOT..."
 make clean
 make mpi
 
-# Detect Matrix
-MAT_FILE=$(find . -name "*.mat" | head -n 1)
+# Find Friendster Mat file
+MAT_FILE=$(find "$PROJECT_ROOT" -name "*Friendster*.mat" | head -n 1)
 if [ -z "$MAT_FILE" ]; then
-    echo "Error: No .mat file found!"
-    exit 1
+    echo "Error: No Friendster .mat file found!"
+    MAT_FILE=$(find . -name "*.mat" | head -n 1)
 fi
 
 echo "Using Matrix: $MAT_FILE"
-echo "Nodes: $SLURM_JOB_NUM_NODES"
-echo "CPUs per task: $SLURM_CPUS_PER_TASK"
-
 export CILK_NWORKERS=$SLURM_CPUS_PER_TASK
 
 # Run

@@ -101,7 +101,9 @@ typedef struct {
 } TLS_Buffer;
 
 // Forward declaration for Frontier BFS
+// Forward declaration for Frontier BFS
 int mpi_coloring_cc_bfs(MPI_Graph *g);
+int mpi_coloring_cc_bfs_streaming(MPI_Graph *g);
 
 static TLS_Buffer *tls_buffers = NULL;
 static int n_workers = 1;
@@ -220,13 +222,53 @@ void cleanup_communication() {
 int mpi_coloring_cc(MPI_Graph *g) {
   // Adaptive dispatcher: check if Frontier BFS should be used
   static int use_frontier = -1; // -1 = not checked yet
+  static int use_streaming = -1;
   if (use_frontier == -1) {
     char *env = getenv("BFS_USE_FRONTIER");
     use_frontier = (env && atoi(env) > 0) ? 1 : 0;
-    if (g->rank == 0 && use_frontier) {
-      printf(
-          "BFS_USE_FRONTIER=1: Using Frontier BFS (O(diameter) iterations)\n");
+
+    char *env_s = getenv("BFS_USE_STREAMING_FRONTIER");
+    use_streaming = (env_s && atoi(env_s) > 0) ? 1 : 0;
+
+    if (g->rank == 0) {
+      if (use_streaming) {
+        printf("BFS_USE_STREAMING_FRONTIER=1: Using Streaming Frontier BFS\n");
+      } else if (use_frontier) {
+        printf("BFS_USE_FRONTIER=1: Using Frontier BFS (O(diameter) "
+               "iterations)\n");
+      }
     }
+  }
+
+  if (use_streaming) {
+    // Streaming BFS handles its own communication setup/teardown if needed??
+    // Actually our implementation uses 'comm' struct?
+    // No, I wrote init_stream_buffers which uses its own buffers.
+    // But does it assume setup_communication was called?
+    // Let's check init_stream_buffers... it allocates stream_bufs.
+    // It doesn't use 'comm' struct.
+    // But does it use g->vtx_dist etc? Yes, those are in g.
+    // 'setup_communication' sets up g->split_indices and comm struct.
+    // Does 'mpi_coloring_cc_bfs_streaming' use g->split_indices?
+    // Yes: "long long start = g->local_row_ptr[u];" ... "if (owner == rank)"
+    // Wait, mpi_coloring_cc_bfs uses g->split_indices to distinguish
+    // local/remote. mpi_coloring_cc_bfs_streaming uses g->local_col_idx
+    // directly and get_owner check. It *could* use split_indices for
+    // optimization, but the code I wrote effectively checks owner for every
+    // edge. Let's check my implementation of mpi_coloring_cc_bfs_streaming. "if
+    // (owner == rank) ... else push_wrapper". It iterates ALL edges: "long long
+    // end = g->local_row_ptr[u+1];". So it does NOT rely on split_indices.
+    // However, it does need g->vtx_dist (initialized in mpi_init_graph).
+    // So we normally DON'T need setup_communication(g) for streaming if we
+    // don't use split_indices. BUT! mpi_init_graph calls setup_communication
+    // implicitly? No, mpi_coloring_cc calls setup_communication. So if I don't
+    // call it, I save memory! BUT: does mpi_coloring_cc_bfs_streaming depend on
+    // anything from setup_communication? It depends on NOTHING from 'comm'
+    // struct. So we can SKIP setup_communication(g) and save that memory too!
+    // Excellent.
+
+    // However, ensuring g->vtx_dist is valid. Yes, mpi_init_graph does that.
+    return mpi_coloring_cc_bfs_streaming(g);
   }
 
   if (use_frontier) {
@@ -773,6 +815,343 @@ int mpi_coloring_cc(MPI_Graph *g) {
   return iterations;
 }
 
+// ======================================================================
+// STREAMING FRONTIER BFS IMPLEMENTATION
+// ======================================================================
+
+typedef struct {
+  int *primary;    // Buffer currently being filled
+  int *secondary;  // Buffer currently being sent (or free)
+  int count;       // Number of items in primary
+  int cap;         // Capacity of each buffer (entries, not bytes)
+  MPI_Request req; // Request for the secondary buffer (if in flight)
+  int active;      // 1 if a send is currently active (req is valid)
+} StreamBuffer;
+
+static StreamBuffer *stream_bufs = NULL;
+static int *stream_recv_buf = NULL;
+static int stream_recv_cap = 0;
+// We need a way to track if we need to terminate.
+// We use a non-blocking barrier approach or a token ring.
+// A simpler robust way for "level completion" in async settings without
+// extensive barriers is:
+// 1. All ranks process their current frontier.
+// 2. While processing, they send messages.
+// 3. Occasionally they probe and receive messages.
+// 4. When local frontier is done, they enter a "Flush & Wait" state.
+// 5. In "Flush & Wait", they flush any remaining buffers.
+// 6. Then they use a non-blocking termination detection (Ibarrier or
+// consensus).
+
+void init_stream_buffers(int size, int cap_per_rank) {
+  stream_bufs = malloc(size * sizeof(StreamBuffer));
+  for (int p = 0; p < size; p++) {
+    stream_bufs[p].cap = cap_per_rank;
+    stream_bufs[p].primary = malloc(cap_per_rank * sizeof(int));
+    stream_bufs[p].secondary = malloc(cap_per_rank * sizeof(int));
+    stream_bufs[p].count = 0;
+    stream_bufs[p].req = MPI_REQUEST_NULL;
+    stream_bufs[p].active = 0;
+  }
+
+  stream_recv_cap = 1024 * 1024; // Start with 1MB recv buffer
+  stream_recv_buf = aligned_alloc_wrapper(stream_recv_cap * sizeof(int));
+}
+
+void free_stream_buffers(int size) {
+  if (!stream_bufs)
+    return;
+  for (int p = 0; p < size; p++) {
+    // Wait for any pending sends to complete before freeing!
+    if (stream_bufs[p].active) {
+      MPI_Wait(&stream_bufs[p].req, MPI_STATUS_IGNORE);
+    }
+    free(stream_bufs[p].primary);
+    free(stream_bufs[p].secondary);
+  }
+  free(stream_bufs);
+  free(stream_recv_buf);
+  stream_bufs = NULL;
+}
+
+// Poll and process incoming messages
+// Returns number of integers received (for termination detection)
+static long long poll_and_process_stream(MPI_Graph *g, int *labels,
+                                         int my_offset, int *next_frontier,
+                                         int *next_frontier_size) {
+  int flag = 0;
+  MPI_Status status;
+  long long total_received = 0;
+
+  while (1) {
+    MPI_Iprobe(MPI_ANY_SOURCE, 1337, MPI_COMM_WORLD, &flag, &status);
+    if (!flag)
+      break;
+
+    int count;
+    MPI_Get_count(&status, MPI_INT, &count);
+
+    if (count > stream_recv_cap) {
+      free(stream_recv_buf);
+      stream_recv_cap = count + 1024;
+      stream_recv_buf = aligned_alloc_wrapper(stream_recv_cap * sizeof(int));
+    }
+
+    // Blocking recv since we know it's there
+    MPI_Recv(stream_recv_buf, count, MPI_INT, status.MPI_SOURCE, 1337,
+             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+    total_received += count;
+
+    for (int k = 0; k < count; k += 2) {
+      int v = stream_recv_buf[k];
+      int comp = stream_recv_buf[k + 1];
+      int local_v = v - my_offset;
+
+      // If valid and unvisited
+      if (local_v >= 0 && local_v < g->local_n) {
+        if (labels[local_v] == 0) {
+          labels[local_v] = comp;
+          next_frontier[(*next_frontier_size)++] = local_v;
+        }
+      }
+    }
+  }
+  return total_received;
+}
+
+// Context for Streaming BFS
+typedef struct {
+  long long total_sent;
+  long long total_recv;
+} StreamContext;
+
+static StreamContext ctx;
+
+// Wrapper to update context
+static void poll_wrapper(MPI_Graph *g, int *labels, int my_offset,
+                         int *next_frontier, int *next_frontier_size) {
+  ctx.total_recv += poll_and_process_stream(g, labels, my_offset, next_frontier,
+                                            next_frontier_size);
+}
+
+// Updated push
+static void push_wrapper(int target_rank, int v, int comp, MPI_Graph *g,
+                         int *labels, int my_offset, int *next_frontier,
+                         int *next_frontier_size) {
+  StreamBuffer *sb = &stream_bufs[target_rank];
+  sb->primary[sb->count++] = v;
+  sb->primary[sb->count++] = comp;
+
+  if (sb->count >= sb->cap) {
+    if (sb->active) {
+      int flag = 0;
+      while (!flag) {
+        MPI_Test(&sb->req, &flag, MPI_STATUS_IGNORE);
+        if (!flag)
+          poll_wrapper(g, labels, my_offset, next_frontier, next_frontier_size);
+      }
+      sb->active = 0;
+    }
+    int *tmp = sb->primary;
+    sb->primary = sb->secondary;
+    sb->secondary = tmp;
+    MPI_Isend(sb->secondary, sb->count, MPI_INT, target_rank, 1337,
+              MPI_COMM_WORLD, &sb->req);
+    ctx.total_sent += sb->count;
+    sb->active = 1;
+    sb->count = 0;
+  }
+}
+
+static void flush_wrapper(int size, MPI_Graph *g, int *labels, int my_offset,
+                          int *next_frontier, int *next_frontier_size) {
+  for (int p = 0; p < size; p++) {
+    if (stream_bufs[p].count > 0) {
+      if (stream_bufs[p].active) {
+        int flag = 0;
+        while (!flag) {
+          MPI_Test(&stream_bufs[p].req, &flag, MPI_STATUS_IGNORE);
+          if (!flag)
+            poll_wrapper(g, labels, my_offset, next_frontier,
+                         next_frontier_size);
+        }
+        stream_bufs[p].active = 0;
+      }
+      MPI_Isend(stream_bufs[p].primary, stream_bufs[p].count, MPI_INT, p, 1337,
+                MPI_COMM_WORLD, &stream_bufs[p].req);
+      ctx.total_sent += stream_bufs[p].count;
+      stream_bufs[p].active = 1;
+      stream_bufs[p].count = 0;
+    }
+  }
+}
+
+static void wait_wrapper(int size, MPI_Graph *g, int *labels, int my_offset,
+                         int *next_frontier, int *next_frontier_size) {
+  for (int p = 0; p < size; p++) {
+    if (stream_bufs[p].active) {
+      int flag = 0;
+      while (!flag) {
+        MPI_Test(&stream_bufs[p].req, &flag, MPI_STATUS_IGNORE);
+        if (!flag)
+          poll_wrapper(g, labels, my_offset, next_frontier, next_frontier_size);
+      }
+      stream_bufs[p].active = 0;
+    }
+  }
+}
+
+int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
+  int rank = g->rank;
+  int size = g->size;
+  int local_n = g->local_n;
+  int my_offset = g->vtx_dist[rank];
+  int *labels = g->local_labels;
+
+  if (rank == 0)
+    printf(
+        "Using Streaming Frontier BFS (Batch Size: 2048, Buffer: 200KB)...\n");
+
+  memset(labels, 0, local_n * sizeof(int));
+  int *frontier = aligned_alloc_wrapper(local_n * sizeof(int));
+  int *next_frontier = aligned_alloc_wrapper(local_n * sizeof(int));
+  int frontier_size = 0;
+  int next_frontier_size = 0;
+
+  // Init buffers: 50000 ints ~ 200KB per rank.
+  // For 128 ranks = 25MB total. Much better than 5GB.
+  init_stream_buffers(size, 50000);
+
+  int total_levels = 0;
+
+  for (int start_attempt = 0; start_attempt < local_n; start_attempt++) {
+    int local_start = -1;
+    for (int i = start_attempt; i < local_n; i++) {
+      if (labels[i] == 0) {
+        local_start = i;
+        break;
+      }
+    }
+
+    int my_global_start =
+        (local_start >= 0) ? (my_offset + local_start) : INT_MAX;
+    int global_min_start;
+    MPI_Allreduce(&my_global_start, &global_min_start, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+
+    if (global_min_start == INT_MAX)
+      break;
+
+    int component_id = global_min_start + 1;
+    frontier_size = 0;
+    if (my_global_start == global_min_start && local_start >= 0) {
+      labels[local_start] = component_id;
+      frontier[frontier_size++] = local_start;
+    }
+
+    int global_frontier_size = 1;
+    while (global_frontier_size > 0) {
+      total_levels++;
+      next_frontier_size = 0;
+      ctx.total_sent = 0;
+      ctx.total_recv = 0;
+
+      // Process frontier
+      // We can use cilk_for IF we protect the stream buffer access.
+      // But stream buffers are per-rank, not per-thread.
+      // So simple serial loop for now, or per-thread buffers (complex).
+      // Given the bottleneck is likely communication, serial processing of
+      // frontier is OK. Or we can use parallel pack like before? For
+      // simplicity/correctness first: Serial loop.
+
+      for (int f = 0; f < frontier_size; f++) {
+        int u = frontier[f];
+        long long start = g->local_row_ptr[u];
+        long long end = g->local_row_ptr[u + 1];
+
+        for (long long e = start; e < end; e++) {
+          int v = g->local_col_idx[e];
+          int owner = get_owner(v, g);
+
+          if (owner == rank) {
+            int local_v = v - my_offset;
+            if (labels[local_v] == 0) {
+              labels[local_v] = component_id;
+              next_frontier[next_frontier_size++] = local_v;
+            }
+          } else {
+            push_wrapper(owner, v, component_id, g, labels, my_offset,
+                         next_frontier, &next_frontier_size);
+          }
+        }
+
+        // Poll every 1024 vertices
+        if (f % 1024 == 0) {
+          poll_wrapper(g, labels, my_offset, next_frontier,
+                       &next_frontier_size);
+        }
+      }
+
+      // Flush
+      flush_wrapper(size, g, labels, my_offset, next_frontier,
+                    &next_frontier_size);
+
+      // Wait for locally active sends
+      wait_wrapper(size, g, labels, my_offset, next_frontier,
+                   &next_frontier_size);
+
+      // Distributed Termination
+      while (1) {
+        // Poll one more time before checking
+        poll_wrapper(g, labels, my_offset, next_frontier, &next_frontier_size);
+
+        long long stats[2] = {ctx.total_sent, ctx.total_recv};
+        long long global_stats[2];
+
+        // We need Iallreduce to avoid blocking if someone is still sending?
+        // Actually, if we flushed, we are done sending for THIS phase.
+        // But someone else might still be sending to us.
+        // If we block in Allreduce, we can't recv! DEADLOCK!
+        // MUST use Iallreduce.
+
+        MPI_Request req;
+        MPI_Iallreduce(stats, global_stats, 2, MPI_LONG_LONG, MPI_SUM,
+                       MPI_COMM_WORLD, &req);
+
+        int flag = 0;
+        while (!flag) {
+          MPI_Test(&req, &flag, MPI_STATUS_IGNORE);
+          if (!flag)
+            poll_wrapper(g, labels, my_offset, next_frontier,
+                         &next_frontier_size);
+        }
+
+        if (global_stats[0] == global_stats[1])
+          break; // Done
+
+        // If not done, wait a bit and retry.
+        // In a real tight loop this floods the network with reductions.
+        // But we are polling inside.
+      }
+
+      // Swap
+      int *tmp = frontier;
+      frontier = next_frontier;
+      next_frontier = tmp;
+      frontier_size = next_frontier_size;
+
+      MPI_Allreduce(&frontier_size, &global_frontier_size, 1, MPI_INT, MPI_SUM,
+                    MPI_COMM_WORLD);
+    }
+  }
+
+  free_stream_buffers(size);
+  free(frontier);
+  free(next_frontier);
+  return total_levels;
+}
+
 /*
  * Frontier-Based BFS for Connected Components (MPI Version)
  * O(diameter) iterations - much faster for single-component graphs
@@ -1038,28 +1417,49 @@ int mpi_init_graph(MPI_Graph *g, int n, const long long *row_ptr,
   g->local_col_idx = aligned_alloc_wrapper(g->local_nnz * sizeof(int));
   g->local_labels = aligned_alloc_wrapper(g->local_n * sizeof(int));
 
-  int *sendcounts = NULL;
-  int *displs = NULL;
-
   if (g->rank == 0) {
-    sendcounts = malloc(g->size * sizeof(int));
-    displs = malloc(g->size * sizeof(int));
-    for (int p = 0; p < g->size; p++) {
+    // Send col_idx to other ranks
+    for (int p = 1; p < g->size; p++) {
       int p_start = g->vtx_dist[p];
       int p_end = g->vtx_dist[p + 1];
       long long start_idx = row_ptr[p_start];
-      long long end_idx = row_ptr[p_end];
-      sendcounts[p] = end_idx - start_idx;
-      displs[p] = start_idx;
+      long long end_idx = row_ptr[p_end]; // row_ptr is long long
+      long long count_long = end_idx - start_idx;
+
+      // We assume count_long fits in INT for now (ranks >= 2 for Friendster)
+      // If single chunk > 2GB, we would need chunked sending.
+      if (count_long > INT_MAX) {
+        fprintf(stderr,
+                "Error: Rank %d needs %lld edges, which exceeds INT_MAX. "
+                "Increase number of ranks!\n",
+                p, count_long);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+      }
+
+      MPI_Send(col_idx + start_idx, (int)count_long, MPI_INT, p, 1,
+               MPI_COMM_WORLD);
     }
-  }
 
-  MPI_Scatterv(col_idx, sendcounts, displs, MPI_INT, g->local_col_idx,
-               g->local_nnz, MPI_INT, 0, MPI_COMM_WORLD);
+    // Copy local part
+    int p_start = g->vtx_dist[0];
+    int p_end = g->vtx_dist[1];
+    long long start_idx = row_ptr[p_start];
+    long long end_idx = row_ptr[p_end];
+    long long count_long = end_idx - start_idx;
+    memcpy(g->local_col_idx, col_idx + start_idx, count_long * sizeof(int));
 
-  if (g->rank == 0) {
-    free(sendcounts);
-    free(displs);
+  } else {
+    // Receive col_idx
+    // local_nnz is already known from row_ptr
+    if (g->local_nnz > INT_MAX) {
+      fprintf(stderr,
+              "Error: Rank %d has %lld edges, exceeds INT_MAX. Increase number "
+              "of ranks!\n",
+              g->rank, (long long)g->local_nnz);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    MPI_Recv(g->local_col_idx, (int)g->local_nnz, MPI_INT, 0, 1, MPI_COMM_WORLD,
+             MPI_STATUS_IGNORE);
   }
 
   return 0;

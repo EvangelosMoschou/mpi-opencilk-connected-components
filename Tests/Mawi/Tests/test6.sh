@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --partition=rome
 #SBATCH --time=00:02:00
-#SBATCH --job-name=MPI_Test2_2Node
+#SBATCH --job-name=MPI_Test6_2Node_2Tasks
 #SBATCH --nodes=2
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=24
+#SBATCH --ntasks-per-node=2
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=32GB
-#SBATCH --output="Slurm output/test2_2node_%j.out"
+#SBATCH --output="../Slurm output/test6_2node_2tasks_%j.out"
 
 # --- Optimizations ---
 export BFS_ZERO_PLANTING=1
@@ -18,10 +18,10 @@ export BFS_PREFETCH_DIST=16
 # --- Environment Setup (Relative to Script) ---
 if [ -n "$SLURM_SUBMIT_DIR" ]; then
     # If running via sbatch, use the submission directory (Project2/Tests) to find root
-    PROJECT_ROOT="$(dirname "$SLURM_SUBMIT_DIR")"
+    PROJECT_ROOT="$(dirname "$(dirname "$(dirname "$SLURM_SUBMIT_DIR")")")"
 else
     # Fallback for local execution
-    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 fi
 
 echo "=========================================="
@@ -34,7 +34,7 @@ echo "Tasks/Node:    $SLURM_NTASKS_PER_NODE"
 echo "CPUs/Task:     $SLURM_CPUS_PER_TASK"
 echo "Memory/Node:   32GB"
 echo "Date:          $(date)"
-echo "Description:   Medium Scaling (2 Nodes, 24 Core, 32GB)"
+echo "Description:   Medium Scaling (2 Nodes, 2 Tasks/Node, 12 Core/Task, 32GB)"
 echo "=========================================="
 
 # Load modules
@@ -46,7 +46,7 @@ module load matio/1.5.26-xzs7hxf
 if [ -d "$PROJECT_ROOT/opencilk" ]; then
     echo "Using Local OpenCilk from $PROJECT_ROOT/opencilk"
     export PATH="$PROJECT_ROOT/opencilk/bin:$PATH"
-    export LD_LIBRARY_PATH="$PROJECT_ROOT/opencilk/lib:$PROJECT_ROOT/opencilk/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+    export LD_LIBRARY_PATH="$PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 else
     echo "Error: Local 'opencilk' directory not found at $PROJECT_ROOT/opencilk"
     exit 1

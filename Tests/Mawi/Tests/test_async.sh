@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=16GB
-#SBATCH --output="Slurm output/test_async_%j.out"
+#SBATCH --output="../Slurm output/test_async_%j.out"
 
 # --- Optimizations ---
 export BFS_ZERO_PLANTING=1
@@ -21,10 +21,10 @@ export BFS_ASYNC=1
 # --- Environment Setup (Relative to Script) ---
 if [ -n "$SLURM_SUBMIT_DIR" ]; then
     # If running via sbatch, use the submission directory (Project2/Tests) to find root
-    PROJECT_ROOT="$(dirname "$SLURM_SUBMIT_DIR")"
+    PROJECT_ROOT="$(dirname "$(dirname "$(dirname "$SLURM_SUBMIT_DIR")")")"
 else
     # Fallback for local execution
-    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 fi
 
 echo "=========================================="
@@ -45,7 +45,7 @@ module load matio/1.5.26-xzs7hxf
 if [ -d "$PROJECT_ROOT/opencilk" ]; then
     echo "Using Local OpenCilk from $PROJECT_ROOT/opencilk"
     export PATH="$PROJECT_ROOT/opencilk/bin:$PATH"
-    export LD_LIBRARY_PATH="$PROJECT_ROOT/opencilk/lib:$PROJECT_ROOT/opencilk/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+    export LD_LIBRARY_PATH="$PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 else
     echo "Error: Local 'opencilk' directory not found at $PROJECT_ROOT/opencilk"
     exit 1

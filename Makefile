@@ -40,8 +40,25 @@ export I_MPI_CC=$(CC)
 MATIO_FLAGS := $(shell pkg-config --cflags matio 2>/dev/null)
 MATIO_LIBS  := $(shell pkg-config --libs matio 2>/dev/null || echo "-lmatio")
 
-CFLAGS_COMMON  = -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc $(MATIO_FLAGS)
-LDFLAGS_COMMON = $(MATIO_LIBS) -fopencilk
+# HDF5 Detection (Debian uses hdf5-serial, RHEL/Rocky uses hdf5)
+# If HDF5_DIR or HDF5_ROOT is set (common in modules), use it.
+HDF5_LDFLAGS :=
+HDF5_CFLAGS :=
+ifneq ($(HDF5_DIR),)
+    HDF5_LDFLAGS := -L$(HDF5_DIR)/lib
+    HDF5_CFLAGS  := -I$(HDF5_DIR)/include
+endif
+ifneq ($(HDF5_ROOT),)
+    HDF5_LDFLAGS := -L$(HDF5_ROOT)/lib
+    HDF5_CFLAGS  := -I$(HDF5_ROOT)/include
+endif
+
+HDF5_LIBS := $(shell pkg-config --libs hdf5-serial 2>/dev/null || pkg-config --libs hdf5 2>/dev/null || echo "-lhdf5")
+HDF5_INCS := $(shell pkg-config --cflags hdf5-serial 2>/dev/null || pkg-config --cflags hdf5 2>/dev/null)
+
+CFLAGS_COMMON  = -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc $(MATIO_FLAGS) $(HDF5_CFLAGS) $(HDF5_INCS)
+LDFLAGS_COMMON = $(MATIO_LIBS) $(HDF5_LDFLAGS) $(HDF5_LIBS) -fopencilk
+
 
 # Cilk-specific
 # Only use PGO if the profile data exists
