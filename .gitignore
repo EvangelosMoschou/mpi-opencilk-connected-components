@@ -29,3 +29,6 @@ Mat file/*.csrbin
 # Backups
 *.bak
 bfsmpi.bak/
+opencilk/
+opencilk
+opencilk-*/

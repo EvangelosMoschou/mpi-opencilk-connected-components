@@ -1,0 +1,43 @@
+Improvements for mat_to_csr (time + memory)
+
+1) Avoid dense intermediates
+- Ensure the converter never materializes an N×N dense matrix.
+- Read sparse structures directly via matio/HDF5 (often CSC-style arrays).
+
+2) Allocate once using nnz metadata
+- If nnz is known from the file, allocate col_idx[nnz] and vals[nnz] exactly once.
+- Build row_ptr with a two-pass approach:
+  (a) count nnz per row
+  (b) prefix-sum to row_ptr
+  (c) fill col_idx/vals using per-row write offsets
+- Avoid realloc/growing vectors; it wastes time and fragments heap.
+
+3) Use smaller index types when safe
+- If nrows/ncols/nnz fit in 32-bit, use uint32_t for row_ptr/col_idx.
+- Provide a fallback to 64-bit only when needed.
+
+4) Reduce copies from matio/HDF5
+- Avoid read→temp copy→transform→copy patterns.
+- Prefer direct transform into final CSR buffers.
+
+5) Parallelize carefully (only where it helps)
+- Parallelize counting nnz/row using thread-local histograms + reduction (avoid atomics per nonzero).
+- Parallelize fill using precomputed row offsets.
+- Expect memory-bandwidth limits; verify with perf counters.
+
+6) Improve locality during CSC→CSR conversion
+- Use prefix-sum offsets and single-pass fill to minimize overhead.
+- Consider block processing if random writes dominate (trade CPU for locality).
+
+7) Decide policy for duplicates and explicit zeros
+- Drop explicit zeros to save memory.
+- Combining duplicates requires per-row sort/hash; only do it if duplicates are common and harmful.
+
+8) Make .csrbin cache efficient
+- Store header (nrows, ncols, nnz, version) + contiguous arrays.
+- Consider memory-mappable layout to reduce load-time copies.
+
+9) Profile with correct tools
+- Time: perf stat/record (cache-misses, memcpy hotspots).
+- Memory: heaptrack or massif.
+- Log read vs convert vs write times separately.

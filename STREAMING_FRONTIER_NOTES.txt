@@ -1,0 +1,115 @@
+# Streaming Frontier BFS Implementation Notes
+
+## Problem
+The current `mpi_coloring_cc_bfs` causes OOM on Friendster because it allocates large buffers (10M entries per rank) to hold all remote frontier vertices before exchanging.
+
+## Proposed Solution: Streaming Frontier Exchange
+
+### Core Idea
+Instead of collecting ALL remote neighbors before sending, process the frontier in **small batches** and stream the results:
+
+### Algorithm
+```c
+int mpi_coloring_cc_bfs_streaming(MPI_Graph *g) {
+  const int BATCH_SIZE = 1000;  // Process 1000 frontier vertices at a time
+  const int BUF_CAP = 100000;   // Small buffer per rank (~400KB)
+  
+  // ... initialization ...
+
+  while (global_frontier_size > 0) {
+    // Process frontier in batches
+    for (int batch_start = 0; batch_start < frontier_size; batch_start += BATCH_SIZE) {
+      int batch_end = min(batch_start + BATCH_SIZE, frontier_size);
+      
+      // 1. Expand this batch's vertices
+      for (int f = batch_start; f < batch_end; f++) {
+        int u = frontier[f];
+        for (each neighbor v of u) {
+          if (is_local(v)) {
+            // Process locally (same as before)
+          } else {
+            // Pack into small send buffer
+            pack_remote_vertex(v, component_id, owner);
+          }
+        }
+      }
+      
+      // 2. If any buffer is getting full, flush immediately
+      for (int p = 0; p < size; p++) {
+        if (send_counts[p] > BUF_CAP * 0.8) {
+          MPI_Isend(send_bufs[p], send_counts[p], MPI_INT, p, TAG, comm, &req);
+          // Start new buffer while send is in flight
+          swap_to_back_buffer(p);
+          send_counts[p] = 0;
+        }
+      }
+      
+      // 3. Poll for incoming messages and process them
+      while (MPI_Iprobe(ANY_SOURCE, TAG, comm, &flag)) {
+        MPI_Recv(recv_buf, ...);
+        process_received_vertices(recv_buf);
+      }
+    }
+    
+    // 4. Flush remaining buffers
+    flush_all_buffers();
+    
+    // 5. Wait for all sends to complete
+    MPI_Waitall(...);
+    
+    // 6. Barrier to ensure all ranks are done with this level
+    MPI_Barrier(comm);
+    
+    // Swap frontiers, check global convergence
+    ...
+  }
+}
+```
+
+### Key Data Structures
+```c
+typedef struct {
+  int *primary;    // Currently being filled
+  int *secondary;  // Being sent (double buffer)
+  int primary_count;
+  int cap;
+  MPI_Request send_req;
+  int send_pending;
+} StreamBuffer;
+
+StreamBuffer send_streams[MAX_RANKS];
+```
+
+### Memory Usage
+- **Current**: O(frontier_size × avg_degree) per rank = OOM on Friendster
+- **Streaming**: O(BATCH_SIZE × avg_degree + BUF_CAP × num_ranks) = ~50MB per rank
+
+### Termination Detection
+Use **quiescence detection**:
+1. After processing all local frontier, enter "waiting" state
+2. Keep polling for incoming messages
+3. If receive a message, process it and go back to "active"
+4. If all ranks are "waiting" with no messages in flight, level is done
+5. Can use `MPI_Ibarrier` or a custom termination protocol
+
+### Challenges
+1. **Message ordering**: Need tags or sequence numbers to know when a level is done
+2. **Deadlock avoidance**: Use non-blocking sends/recvs only
+3. **Load imbalance**: Some ranks may finish their batch while others are still sending
+
+### Implementation Checklist
+- [ ] Add `StreamBuffer` struct
+- [ ] Implement `init_stream_buffers()` and `free_stream_buffers()`
+- [ ] Implement `pack_and_maybe_flush()` helper
+- [ ] Implement `poll_and_process_incoming()` helper
+- [ ] Implement `wait_for_level_completion()` with quiescence detection
+- [ ] Add `BFS_USE_STREAMING_FRONTIER=1` env var
+- [ ] Test on Friendster
+
+### Estimated Effort
+- 200-300 lines of new/modified code
+- 2-3 hours of implementation
+- High risk of subtle communication bugs
+
+### Alternative: Reduce Buffer Per Neighbor
+Instead of storing (vertex_id, component_id) pairs, just store vertex_id and derive component_id from the BFS level. Halves buffer size.
