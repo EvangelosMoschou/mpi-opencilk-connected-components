@@ -33,8 +33,8 @@ void bool_or_reduce(void *left, void *right) {
 /*
  * Frontier-Based Parallel BFS for Connected Components
  */
-int coloring_cc_bfs(int n, const int *row_ptr, const int *col_idx, int *labels,
-                    int max_iters) {
+int coloring_cc_bfs(int n, const long long *row_ptr, const int *col_idx,
+                    int *labels, int max_iters) {
   if (!row_ptr || !col_idx || !labels)
     return -1;
 
@@ -84,13 +84,13 @@ int coloring_cc_bfs(int n, const int *row_ptr, const int *col_idx, int *labels,
         cilk_for(int f = 0; f < frontier_size; ++f) {
           int u = frontier[f];
 
-          int start = row_ptr[u];
-          int end = row_ptr[u + 1];
+          long long start = row_ptr[u];
+          long long end = row_ptr[u + 1];
 
           // Prefetching could be added here if needed, but let's keep it simple
           // first
 
-          for (int e = start; e < end; ++e) {
+          for (long long e = start; e < end; ++e) {
             int v = col_idx[e];
 
             // Check if neighbor v is unvisited
@@ -136,8 +136,8 @@ int coloring_cc_bfs(int n, const int *row_ptr, const int *col_idx, int *labels,
  * Label Propagation for Connected Components (Original Implementation)
  * Best for Small-Diameter / High-Density Graphs (Social Networks)
  */
-int coloring_cc_lp(int n, const int *row_ptr, const int *col_idx, int *labels,
-                   int max_iters) {
+int coloring_cc_lp(int n, const long long *row_ptr, const int *col_idx,
+                   int *labels, int max_iters) {
   if (!row_ptr || !col_idx || !labels)
     return -1;
 
@@ -197,7 +197,7 @@ int coloring_cc_lp(int n, const int *row_ptr, const int *col_idx, int *labels,
     int max_deg = -1;
 
     for (int i = 0; i < n; i++) {
-      int deg = row_ptr[i + 1] - row_ptr[i];
+      long long deg = row_ptr[i + 1] - row_ptr[i];
       if (deg > max_deg) {
         max_deg = deg;
         max_v = i;
@@ -209,11 +209,11 @@ int coloring_cc_lp(int n, const int *row_ptr, const int *col_idx, int *labels,
       labels[0] = labels[max_v];
       labels[max_v] = temp;
 
-      int start = row_ptr[max_v];
-      int end = row_ptr[max_v + 1];
+      long long start = row_ptr[max_v];
+      long long end = row_ptr[max_v + 1];
       int avg_deg = (n > 0) ? (row_ptr[n] / n) : 0;
 
-      cilk_for(int e = start; e < end; e++) {
+      cilk_for(long long e = start; e < end; e++) {
         int u = col_idx[e];
         if (u >= 0 && u < n) {
           int val = labels[max_v];
@@ -221,11 +221,11 @@ int coloring_cc_lp(int n, const int *row_ptr, const int *col_idx, int *labels,
             __atomic_fetch_min(&labels[u], val, __ATOMIC_SEQ_CST);
 
             if (hub_push) {
-              int u_deg = row_ptr[u + 1] - row_ptr[u];
+              long long u_deg = row_ptr[u + 1] - row_ptr[u];
               if (u_deg > avg_deg) {
-                int u_start = row_ptr[u];
-                int u_end = row_ptr[u + 1];
-                for (int k = u_start; k < u_end; k++) {
+                long long u_start = row_ptr[u];
+                long long u_end = row_ptr[u + 1];
+                for (long long k = u_start; k < u_end; k++) {
                   int w = col_idx[k];
                   if (w >= 0 && w < n) {
                     if (val < labels[w]) {
@@ -266,16 +266,16 @@ int coloring_cc_lp(int n, const int *row_ptr, const int *col_idx, int *labels,
       if (best == 1)
         continue;
 
-      int start_edge = row_ptr[v];
-      int end_edge = row_ptr[v + 1];
-      int limit = end_edge;
+      long long start_edge = row_ptr[v];
+      long long end_edge = row_ptr[v + 1];
+      long long limit = end_edge;
 
       if (iterations <= sampling_rounds) {
         if (start_edge + sampling_k < end_edge)
           limit = start_edge + sampling_k;
       }
 
-      for (int e = start_edge; e < limit; ++e) {
+      for (long long e = start_edge; e < limit; ++e) {
         if (prefetch_dist > 0) {
           if (e + prefetch_dist * 2 < limit) {
             __builtin_prefetch(&col_idx[e + prefetch_dist * 2], 0, 3);
@@ -324,15 +324,15 @@ int coloring_cc_lp(int n, const int *row_ptr, const int *col_idx, int *labels,
  * Adaptive Dispatcher
  * Selects the best algorithm based on graph density (Average Degree).
  */
-int coloring_cc(int n, const int *row_ptr, const int *col_idx, int *labels,
-                int max_iters) {
+int coloring_cc(int n, const long long *row_ptr, const int *col_idx,
+                int *labels, int max_iters) {
   if (n <= 0)
     return 0;
 
   // Heuristic: Average Degree
   // High Density -> Small Diameter -> Label Propagation
   // Low Density -> Large Diameter -> Frontier BFS
-  long nz = row_ptr[n];
+  long long nz = row_ptr[n];
   double avg_deg = (double)nz / n;
 
   // Threshold 4.0 is empirical based on LiveJournal (~14) vs Kmer (~2)
@@ -395,9 +395,10 @@ void print_sample_labels(int n, const int *labels, int max_print) {
  * and return allocated labels via out_labels. Caller must free *out_labels.
  * Returns 0 on success, negative on error.
  */
-int run_coloring_cc_from_csr(int n, const int *row_ptr, const int *col_idx,
-                             int **out_labels, int max_iters,
-                             double *elapsed_seconds, int *out_iters) {
+int run_coloring_cc_from_csr(int n, const long long *row_ptr,
+                             const int *col_idx, int **out_labels,
+                             int max_iters, double *elapsed_seconds,
+                             int *out_iters) {
 
   if (!out_labels)
     return -1;

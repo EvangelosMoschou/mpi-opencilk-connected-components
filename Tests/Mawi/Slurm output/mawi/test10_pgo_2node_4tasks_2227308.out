@@ -1,0 +1,98 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2227308
+Job Name:      MPI_PGO_Test10_2Node_4Tasks
+Description:   PGO ENABLED Test (Based on Test 7)
+Mode:          PGO (Profile-Guided Optimization)
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Using Matrix: ./Mat File/mawi_201512020330.mat
+
+>>> Starting PGO Workflow <<<
+[PGO 1/4] Building Generation Binary...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+rm -rf obj/test10 bin/test10 logs/*.profraw logs/*.profdata
+rm -rf obj_mpi obj_cilk # Remove legacy build directories
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -c src/main_mpi.c -o obj/test10/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -c bfsmpi/BFSmpi.c -o obj/test10/mpi/bfsmpi/BFSmpi.o
+bfsmpi/BFSmpi.c:564:15: warning: '__cilkrts_get_worker_number' is deprecated [-Wdeprecated-declarations]
+        tid = __cilkrts_get_worker_number();
+              ^
+/home/e/evangelm/Project2PKD/opencilk/lib/clang/16/include/cilk/cilk_api.h:17:59: note: '__cilkrts_get_worker_number' has been explicitly marked deprecated here
+unsigned __cilkrts_get_worker_number(void) __attribute__((deprecated));
+                                                          ^
+1 warning generated.
+mpicc -fopencilk -O3 -march=native -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -c bfsmpi/partition.c -o obj/test10/mpi/bfsmpi/partition.o
+mpicc -fopencilk -O3 -march=native -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -c src/mat_to_csr.c -o obj/test10/mpi/src/mat_to_csr.o
+mpicc -fopencilk -O3 -march=native -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -o bin/test10/mpi/main obj/test10/mpi/src/main_mpi.o obj/test10/mpi/bfsmpi/BFSmpi.o obj/test10/mpi/bfsmpi/partition.o obj/test10/mpi/src/mat_to_csr.o -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/lib -lmatio -fopencilk -fprofile-instr-generate
+[PGO 2/4] Running Profiling Phase...
+[1765741901.737411] [cn32:3810155:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741901.737411] [cn32:3810155:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741901.737412] [cn32:3810153:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741901.737412] [cn32:3810153:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741901.737412] [cn32:3810154:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741901.737412] [cn32:3810154:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741901.737832] [cn32:3810156:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741901.737832] [cn32:3810156:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741901.756003] [cn33:2001211:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741901.756003] [cn33:2001211:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741901.756003] [cn33:2001213:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741901.756003] [cn33:2001213:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741901.756003] [cn33:2001212:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741901.756003] [cn33:2001212:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741901.756221] [cn33:2001210:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741901.756221] [cn33:2001210:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 1
+  Rank 1: Rows 1 - 2
+  Rank 2: Rows 2 - 3
+  Rank 3: Rows 3 - 164628
+  Rank 4: Rows 164628 - 46178221
+  Rank 5: Rows 46178221 - 106184207
+  Rank 6: Rows 106184207 - 166190193
+  Rank 7: Rows 166190193 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=8 iters=15 time=15.263647 s components=3971144
+[PGO 3/4] Merging Profiles...
+Profile saved to logs/bfsmpi_test10.profdata
+[PGO 4/4] Building Optimized Binary...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi -fprofile-instr-use=logs/bfsmpi_test10.profdata -c src/main_mpi.c -o obj/test10/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi -fprofile-instr-use=logs/bfsmpi_test10.profdata -c bfsmpi/BFSmpi.c -o obj/test10/mpi/bfsmpi/BFSmpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi -fprofile-instr-use=logs/bfsmpi_test10.profdata -c bfsmpi/partition.c -o obj/test10/mpi/bfsmpi/partition.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi -fprofile-instr-use=logs/bfsmpi_test10.profdata -c src/mat_to_csr.c -o obj/test10/mpi/src/mat_to_csr.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi -fprofile-instr-use=logs/bfsmpi_test10.profdata -o bin/test10/mpi/main obj/test10/mpi/src/main_mpi.o obj/test10/mpi/bfsmpi/BFSmpi.o obj/test10/mpi/bfsmpi/partition.o obj/test10/mpi/src/mat_to_csr.o -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/lib -lmatio -fopencilk
+>>> PGO Workflow Complete <<<
+
+Running Optimized Benchmark...
+[1765741921.259006] [cn32:3810279:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741921.259006] [cn32:3810279:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741921.259006] [cn32:3810280:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741921.259006] [cn32:3810280:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741921.259013] [cn32:3810278:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741921.259013] [cn32:3810278:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741921.259377] [cn32:3810281:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741921.259377] [cn32:3810281:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741921.272191] [cn33:2001422:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741921.272191] [cn33:2001422:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741921.272193] [cn33:2001423:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741921.272193] [cn33:2001423:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741921.272191] [cn33:2001421:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741921.272191] [cn33:2001421:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765741921.272191] [cn33:2001420:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765741921.272191] [cn33:2001420:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 1
+  Rank 1: Rows 1 - 2
+  Rank 2: Rows 2 - 3
+  Rank 3: Rows 3 - 164628
+  Rank 4: Rows 164628 - 46178221
+  Rank 5: Rows 46178221 - 106184207
+  Rank 6: Rows 106184207 - 166190193
+  Rank 7: Rows 166190193 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=8 iters=14 time=12.146093 s components=3971144

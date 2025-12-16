@@ -1,0 +1,47 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2227276
+Job Name:      MPI_PGO_Test10_2Node_4Tasks
+Description:   PGO ENABLED Test (Based on Test 7)
+Mode:          PGO (Profile-Guided Optimization)
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Using Matrix: ./Mat File/mawi_201512020330.mat
+
+>>> Starting PGO Workflow <<<
+[PGO 1/4] Building Generation Binary...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+rm -rf obj bin logs/*.profraw logs/*.profdata
+rm: cannot remove 'bin/mpi/.nfs000000000259537100003110': Device or resource busy
+make: *** [Makefile:109: clean] Error 1
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -c src/main_mpi.c -o obj/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -c bfsmpi/BFSmpi.c -o obj/mpi/bfsmpi/BFSmpi.o
+bfsmpi/BFSmpi.c:564:15: warning: '__cilkrts_get_worker_number' is deprecated [-Wdeprecated-declarations]
+        tid = __cilkrts_get_worker_number();
+              ^
+/home/e/evangelm/Project2PKD/opencilk/lib/clang/16/include/cilk/cilk_api.h:17:59: note: '__cilkrts_get_worker_number' has been explicitly marked deprecated here
+unsigned __cilkrts_get_worker_number(void) __attribute__((deprecated));
+                                                          ^
+bfsmpi/BFSmpi.c:1104:62: warning: incompatible pointer types passing 'long long *' to parameter of type 'long *' [-Wincompatible-pointer-types]
+                                async_buf_cap, next_changed, &total_recv);
+                                                             ^~~~~~~~~~~
+bfsmpi/BFSmpi.c:964:61: note: passing argument to parameter 'processed_count' here
+                              uint64_t *next_changed, long *processed_count) {
+                                                            ^
+bfsmpi/BFSmpi.c:1133:27: warning: incompatible pointer types passing 'long long *' to parameter of type 'long *' [-Wincompatible-pointer-types]
+                          &total_recv);
+                          ^~~~~~~~~~~
+bfsmpi/BFSmpi.c:964:61: note: passing argument to parameter 'processed_count' here
+                              uint64_t *next_changed, long *processed_count) {
+                                                            ^
+3 warnings generated.
+mpicc -fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -c bfsmpi/partition.c -o obj/mpi/bfsmpi/partition.o
+mpicc -fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -c src/mat_to_csr.c -o obj/mpi/src/mat_to_csr.o
+src/mat_to_csr.c:4:10: fatal error: 'matio.h' file not found
+#include <matio.h>
+         ^~~~~~~~~
+1 error generated.
+make: *** [Makefile:105: obj/mpi/src/mat_to_csr.o] Error 1
+Error: Build failed!

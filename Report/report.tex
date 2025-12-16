@@ -133,7 +133,7 @@ Experiments were conducted on the AUTH HPC cluster ``Rome'' partition (AMD EPYC,
     \item \textbf{Connected Components}: 3,971,144
 \end{itemize}
 
-\subsection{Performance Results}
+\subsection{Mawi Benchmark Results}
 
 \begin{table}[H]
 \centering
@@ -149,7 +149,7 @@ test10 & 2 & 8  & Sync + PGO         & 12.15 & 0.62× \\
 test11 & 2 & 8  & Async + PGO        & 5.63  & 1.34× \\
 \bottomrule
 \end{tabular}
-\caption{Performance comparison on mawi\_201512020330 (480M edges). All configurations find 3,971,144 components. Speedup relative to sequential baseline (test5).}
+\caption{Mawi Benchmark Results: mawi\_201512020330 (480M edges). All configurations find 3,971,144 components. Speedup relative to sequential baseline (test5).}
 \end{table}
 
 \subsubsection{Slurm Output: Edge-Balanced Partition}
@@ -193,8 +193,54 @@ The asynchronous algorithm achieves \textbf{1.56x speedup} over the sequential b
 Profile-Guided Optimization reduced iterations from 4.3M to 3.1M through better branch prediction, but the final time (5.63s) is slightly higher than the non-PGO async run (4.84s). This is attributed to cluster load conditions: the PGO tests (test10, test11) were executed on a day when the cluster was significantly more overloaded, causing all builds and runs to complete slower than usual.
 
 % ------------------------------------------------------------------------------
-% Section 6: Conclusion
+% Section 5.5: Friendster Benchmark
 % ------------------------------------------------------------------------------
+\subsection{Friendster Benchmark}
+
+We also evaluated the scalability on the \texttt{com-Friendster} graph, significantly larger than Mawi:
+\begin{itemize}
+    \item \textbf{Vertices}: 65,608,366
+    \item \textbf{Edges}: $\approx$ 2.5 Billion
+    \item \textbf{Configuration}: Hybrid MPI + OpenCilk (Streaming Frontier BFS)
+\end{itemize}
+
+% ------------------------------------------------------------------------------
+% Section 5.5.1: Performance Analysis
+% ------------------------------------------------------------------------------
+\subsubsection{Performance Analysis on Friendster}
+
+Table \ref{tab:friendster_results} summarizes the performance on the Friendster graph.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Environment} & \textbf{Configuration} & \textbf{Cores} & \textbf{Time (s)} & \textbf{MTEPS} \\
+\midrule
+\multicolumn{5}{c}{\textbf{Auth HPC Cluster (Distributed MPI)}} \\
+\midrule
+Cluster Sequential & 1 Node (1 MPI Rank) & 1 & 74.94 & 48.2 \\
+Cluster Parallel & 1 Node (4 MPI x 16 Cilk) & 64 & 33.01 & 109.4 \\
+Cluster Parallel & 2 Nodes (8 MPI x 16 Cilk) & 128 & \textbf{29.86} & 120.9 \\
+Cluster Parallel & 3 Nodes (12 MPI x 16 Cilk) & 192 & 31.04 & 116.3 \\
+\midrule
+\multicolumn{5}{c}{\textbf{Local Workstation (Shared Memory OpenCilk)}} \\
+\midrule
+Local Parallel & 1 Node (16 Cilk Workers) & 16 & \textbf{1.30} & \textbf{2778.6} \\
+\bottomrule
+\end{tabular}
+\caption{Friendster Benchmark Results: Cluster (MPI) vs Local (OpenCilk)}
+\label{tab:friendster_results}
+\end{table}
+
+\textbf{Analysis:}
+The local workstation (Ryzen 7 5800H, 32GB RAM, ~20GB used) significantly outperforms the cluster for this specific workload.
+\begin{itemize}
+    \item \textbf{Local Speedup}: The shared-memory Cilk implementation (Label Propagation) running on a single consumer node completes in \textbf{1.30s}, which is \textbf{23x faster} than the best distributed run on the cluster (29.86s).
+    \item \textbf{Overhead}: The cluster performance is dominated by the overhead of the distributed Frontier BFS algorithm (partitioning, communication, message packing) which is necessary for scaling to multi-terabyte graphs but inefficient for graphs that fit in a single node's RAM relative to a zero-overhead shared-memory approach.
+    \item \textbf{Sequential Baseline}: The cluster sequential baseline (74.94s) highlights the significant cost of the distributed data structures even when running on a single rank, compared to the optimized local execution.
+\end{itemize}
+
 \section{Conclusion}
 
 We implemented a hybrid MPI+OpenCilk parallel connected components algorithm with:

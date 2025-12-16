@@ -1,0 +1,32 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2224178
+Job Name:      MPI_Test2_2Node
+Node Count:    2
+Tasks/Node:    1
+CPUs/Task:     24
+Memory/Node:   32GB
+Date:          Thu Dec 11 07:13:40 PM EET 2025
+Description:   Medium Scaling (2 Nodes, 24 Core, 32GB)
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Building project in /home/e/evangelm/Project2PKD...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+rm -rf obj bin logs/*.profraw logs/*.profdata
+rm -rf obj_mpi obj_cilk # Remove legacy build directories
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c src/main_mpi.c -o obj/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c bfsmpi/BFSmpi.c -o obj/mpi/bfsmpi/BFSmpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c bfsmpi/partition.c -o obj/mpi/bfsmpi/partition.o
+error: unable to open output file 'obj/mpi/bfsmpi/partition.o': 'No such file or directory'
+1 error generated.
+make: *** [Makefile:105: obj/mpi/bfsmpi/partition.o] Error 1
+Using Matrix: ./Mat File/mawi_201512020330.mat
+Nodes: 2
+CPUs per task: 24
+slurmstepd: error: execve(): /home/e/evangelm/Project2PKD/./bin/mpi/main: No such file or directory
+slurmstepd: error: execve(): /home/e/evangelm/Project2PKD/./bin/mpi/main: No such file or directory
+srun: error: cn41: task 0: Exited with exit code 2
+srun: Terminating StepId=2224178.0
+srun: error: cn42: task 1: Exited with exit code 2

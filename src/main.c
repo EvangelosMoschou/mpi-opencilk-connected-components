@@ -59,9 +59,9 @@ int main(int argc, char *argv[]) {
   }
 
   int rows = csr.nrows;
-  int nz = csr.nzcount;
-  printf("Loaded matrix:\n number of rows:%d,\n number of nonzeros:%d\n", rows,
-         nz);
+  long long nz = csr.nzcount;
+  printf("Loaded matrix:\n number of rows:%d,\n number of nonzeros:%lld\n",
+         rows, (long long)nz);
 
   /* Allocate space for component labels - size based on number of rows, not
    * nonzeros */

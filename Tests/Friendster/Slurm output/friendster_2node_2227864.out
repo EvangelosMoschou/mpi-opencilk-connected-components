@@ -1,0 +1,60 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2227864
+Job Name:      Friendster_2Node
+Node Count:    2
+Memory/Node:   64GB
+Description:   Friendster 2 Node (Hybrid: 8 MPI x 16 Cilk)
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Building project in /home/e/evangelm/Project2PKD...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+make: *** No rule to make target 'clean_all'.  Stop.
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+rm -rf obj bin logs/*.profraw logs/*.profdata
+rm -rf obj_mpi obj_cilk # Remove legacy build directories
+make bin/mpi/main CFLAGS_MPI="-fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi -fprofile-instr-generate" LDFLAGS_MPI="-L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/lib -lmatio -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/lib -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/lib -lhdf5 -fopencilk -fprofile-instr-generate"
+make[1]: Entering directory '/home/e/evangelm/Project2PKD'
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi -fprofile-instr-generate -c src/main_mpi.c -o obj/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi -fprofile-instr-generate -c bfsmpi/BFSmpi.c -o obj/mpi/bfsmpi/BFSmpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi -fprofile-instr-generate -c bfsmpi/partition.c -o obj/mpi/bfsmpi/partition.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi -fprofile-instr-generate -c src/mat_to_csr.c -o obj/mpi/src/mat_to_csr.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi -fprofile-instr-generate -o bin/mpi/main obj/mpi/src/main_mpi.o obj/mpi/bfsmpi/BFSmpi.o obj/mpi/bfsmpi/partition.o obj/mpi/src/mat_to_csr.o -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/lib -lmatio -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/lib -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/lib -lhdf5 -fopencilk -fprofile-instr-generate
+make[1]: Leaving directory '/home/e/evangelm/Project2PKD'
+LLVM_PROFILE_FILE="logs/bfsmpi-%p.profraw" ./scripts/bench_mpi.sh "Mat file/mawi_201512020330.mat" 1
+/bin/sh: line 1: ./scripts/bench_mpi.sh: Permission denied
+make: *** [Makefile:150: profile] Error 126
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+make: Nothing to be done for 'mpi'.
+Using Matrix: /home/e/evangelm/Project2PKD/Mat File/com-Friendster.mat
+[1765820374.269910] [cn42:3620017:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765820374.269910] [cn42:3620017:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765820374.269910] [cn42:3620018:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765820374.269910] [cn42:3620018:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765820374.271018] [cn42:3620019:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765820374.271018] [cn42:3620019:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765820374.271093] [cn42:3620020:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765820374.271093] [cn42:3620020:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765820375.628897] [cn46:2479787:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765820375.628897] [cn46:2479787:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765820375.628897] [cn46:2479788:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765820375.628897] [cn46:2479788:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765820375.628897] [cn46:2479789:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765820375.628897] [cn46:2479789:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765820375.628897] [cn46:2479790:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765820375.628897] [cn46:2479790:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 343772
+  Rank 1: Rows 343772 - 1079737
+  Rank 2: Rows 1079737 - 2247077
+  Rank 3: Rows 2247077 - 3959163
+  Rank 4: Rows 3959163 - 6448438
+  Rank 5: Rows 6448438 - 10220539
+  Rank 6: Rows 10220539 - 16914595
+  Rank 7: Rows 16914595 - 65608366
+BFS_USE_STREAMING_FRONTIER=1: Using Streaming Frontier BFS
+Using Streaming Frontier BFS (Batch Size: 2048, Buffer: 200KB)...
+MPI CC: procs=8 iters=22 time=29.864893 s components=1

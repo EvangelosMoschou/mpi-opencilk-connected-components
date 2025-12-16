@@ -121,10 +121,14 @@ $(OBJ_MPI)/%.o: %.c
 	@mkdir -p $(@D)
 	$(MPICC) $(CFLAGS_MPI) -c $< -o $@
 
-# Clean
+# Clean build artifacts (keep profiles)
 clean:
-	rm -rf $(OBJ_DIR) $(BIN_DIR) logs/*.profraw logs/*.profdata
-	rm -rf obj_mpi obj_cilk # Remove legacy build directories
+	rm -rf $(OBJ_DIR) $(BIN_DIR) logs/*.profraw
+	rm -rf obj_mpi obj_cilk
+
+# Clean everything including profiles
+clean_all: clean
+	rm -rf logs/*.profdata
 
 # ------------------------------------------------------------------------------
 # Profile-Guided Optimization (PGO)
@@ -147,8 +151,10 @@ profile_cilk: clean
 profile: clean
 	@mkdir -p $(BIN_MPI) logs
 	$(MAKE) $(TARGET_MPI) CFLAGS_MPI="$(PGO_GEN_FLAGS_MPI_C)" LDFLAGS_MPI="$(PGO_GEN_FLAGS_MPI_L)"
+	# Run on Mawi sample for profiling (Friendster is too big for profiling step)
 	LLVM_PROFILE_FILE="logs/bfsmpi-%p.profraw" ./scripts/bench_mpi.sh "Mat file/mawi_201512020330.mat" 1
 	llvm-profdata merge -output=logs/bfsmpi.profdata logs/bfsmpi-*.profraw
+	# Clean build artifacts but KEEP .profdata
 	$(MAKE) clean
 	@echo "Profile generated: logs/bfsmpi.profdata"
 

@@ -51,10 +51,12 @@ else
 fi
 
 # Build Project
+# Build Project with PGO
 cd "$PROJECT_ROOT"
 echo "Building project in $PROJECT_ROOT..."
-make clean
-make mpi
+make clean_all
+make profile # Generate PGO data using Mawi
+make mpi     # Build optimized binary using PGO data
 
 # Find Friendster Mat file
 # Adjust searching path if necessary, or assume it's in Mat file/

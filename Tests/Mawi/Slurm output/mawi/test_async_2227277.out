@@ -1,0 +1,20 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2227277
+Job Name:      MPI_Async_Test
+Description:   Async Label Propagation Test (1 Node, 10 Core)
+Mode:          ASYNC
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Using Matrix: ./Mat File/mawi_201512020330.mat
+Nodes: 1
+CPUs per task: 10
+--------------------------------------------------------------------------
+prterun was unable to launch the specified application as it lacked
+permissions to execute an executable:
+
+Executable: ./bin/mpi/main Node: cn39
+
+while attempting to start process rank 0.
+--------------------------------------------------------------------------

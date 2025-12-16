@@ -1,0 +1,54 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2227708
+Job Name:      Friendster_1Node
+Node Count:    1
+Memory/Node:   64GB
+Description:   Friendster 1 Node (Hybrid: 8 MPI x 16 Cilk)
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Building project in /home/e/evangelm/Project2PKD...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+rm -rf obj bin logs/*.profraw logs/*.profdata
+rm -rf obj_mpi obj_cilk # Remove legacy build directories
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c src/main_mpi.c -o obj/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c bfsmpi/BFSmpi.c -o obj/mpi/bfsmpi/BFSmpi.o
+bfsmpi/BFSmpi.c:923:1: error: expected identifier or '('
+if (!flag) {
+^
+bfsmpi/BFSmpi.c:927:1: error: extraneous closing brace ('}')
+}
+^
+bfsmpi/BFSmpi.c:928:13: error: use of undeclared identifier 'p'
+stream_bufs[p].active = 0;
+            ^
+bfsmpi/BFSmpi.c:928:1: error: type specifier missing, defaults to 'int'; ISO C99 and later do not support implicit int [-Wimplicit-int]
+stream_bufs[p].active = 0;
+^
+int
+bfsmpi/BFSmpi.c:928:15: error: expected ';' after top level declarator
+stream_bufs[p].active = 0;
+              ^
+              ;
+bfsmpi/BFSmpi.c:929:1: error: extraneous closing brace ('}')
+}
+^
+bfsmpi/BFSmpi.c:930:1: error: extraneous closing brace ('}')
+}
+^
+bfsmpi/BFSmpi.c:931:1: error: extraneous closing brace ('}')
+}
+^
+8 errors generated.
+make: *** [Makefile:109: obj/mpi/bfsmpi/BFSmpi.o] Error 1
+Using Matrix: /home/e/evangelm/Project2PKD/Mat File/com-Friendster.mat
+--------------------------------------------------------------------------
+prterun was unable to launch the specified application as it lacked
+permissions to execute an executable:
+
+Executable: ./bin/mpi/main Node: cn32
+
+while attempting to start process rank 0.
+--------------------------------------------------------------------------

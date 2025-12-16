@@ -1,0 +1,78 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2227772
+Job Name:      Friendster_1Node
+Node Count:    1
+Memory/Node:   64GB
+Description:   Friendster 1 Node (Hybrid: 8 MPI x 16 Cilk)
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Building project in /home/e/evangelm/Project2PKD...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+rm -rf obj bin logs/*.profraw logs/*.profdata
+rm -rf obj_mpi obj_cilk # Remove legacy build directories
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi  -c src/main_mpi.c -o obj/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi  -c bfsmpi/BFSmpi.c -o obj/mpi/bfsmpi/BFSmpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi  -c bfsmpi/partition.c -o obj/mpi/bfsmpi/partition.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi  -c src/mat_to_csr.c -o obj/mpi/src/mat_to_csr.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -Ibfsmpi  -o bin/mpi/main obj/mpi/src/main_mpi.o obj/mpi/bfsmpi/BFSmpi.o obj/mpi/bfsmpi/partition.o obj/mpi/src/mat_to_csr.o -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/lib -lmatio -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/lib -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/lib -lhdf5 -fopencilk
+Using Matrix: /home/e/evangelm/Project2PKD/Mat File/com-Friendster.mat
+[1765813158.868948] [cn32:4002424:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765813158.868948] [cn32:4002424:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765813158.868984] [cn32:4002422:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765813158.868984] [cn32:4002422:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765813158.869675] [cn32:4002425:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765813158.869675] [cn32:4002425:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+[1765813158.869752] [cn32:4002423:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765813158.869752] [cn32:4002423:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 1079737
+  Rank 1: Rows 1079737 - 3959163
+  Rank 2: Rows 3959163 - 10220539
+  Rank 3: Rows 10220539 - 65608366
+BFS_USE_STREAMING_FRONTIER=1: Using Streaming Frontier BFS
+Using Streaming Frontier BFS (Batch Size: 2048, Buffer: 200KB)...
+[cn32:4002423:0:4002423] Caught signal 11 (Segmentation fault: address not mapped to object at address 0xfffffffffffffff7)
+==== backtrace (tid:4002423) ====
+ 0  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(ucs_handle_error+0x294) [0x7f53761c5b44]
+ 1  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(+0x31cfc) [0x7f53761c5cfc]
+ 2  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(+0x31f27) [0x7f53761c5f27]
+ 3  /lib64/libc.so.6(+0x3ebf0) [0x7f537643ebf0]
+ 4  /lib64/libc.so.6(free+0x1e) [0x7f537649a28e]
+ 5  ./bin/mpi/main(+0x3f30) [0x55c2ecd2cf30]
+ 6  /lib64/libc.so.6(+0x295d0) [0x7f53764295d0]
+ 7  /lib64/libc.so.6(__libc_start_main+0x80) [0x7f5376429680]
+ 8  ./bin/mpi/main(+0x36e5) [0x55c2ecd2c6e5]
+=================================
+[cn32:4002424:0:4002424] Caught signal 11 (Segmentation fault: address not mapped to object at address 0xfffffffffffffff7)
+==== backtrace (tid:4002424) ====
+ 0  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(ucs_handle_error+0x294) [0x7fdb91c9fb44]
+ 1  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(+0x31cfc) [0x7fdb91c9fcfc]
+ 2  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(+0x31f27) [0x7fdb91c9ff27]
+ 3  /lib64/libc.so.6(+0x3ebf0) [0x7fdb91a3ebf0]
+ 4  /lib64/libc.so.6(free+0x1e) [0x7fdb91a9a28e]
+ 5  ./bin/mpi/main(+0x3f30) [0x55612ff38f30]
+ 6  /lib64/libc.so.6(+0x295d0) [0x7fdb91a295d0]
+ 7  /lib64/libc.so.6(__libc_start_main+0x80) [0x7fdb91a29680]
+ 8  ./bin/mpi/main(+0x36e5) [0x55612ff386e5]
+=================================
+[cn32:4002425:0:4002425] Caught signal 11 (Segmentation fault: Sent by the kernel at address (nil))
+==== backtrace (tid:4002425) ====
+ 0  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(ucs_handle_error+0x294) [0x7effc5892b44]
+ 1  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(+0x31cfc) [0x7effc5892cfc]
+ 2  /mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/ucx-1.16.0-i2spuaqk5sbxipwwhxrsr7znv52rt3sd/lib/libucs.so.0(+0x31f27) [0x7effc5892f27]
+ 3  /lib64/libc.so.6(+0x3ebf0) [0x7effc563ebf0]
+ 4  /lib64/libc.so.6(free+0x1e) [0x7effc569a28e]
+ 5  ./bin/mpi/main(+0x3f30) [0x55a5a4cf6f30]
+ 6  /lib64/libc.so.6(+0x295d0) [0x7effc56295d0]
+ 7  /lib64/libc.so.6(__libc_start_main+0x80) [0x7effc5629680]
+ 8  ./bin/mpi/main(+0x36e5) [0x55a5a4cf66e5]
+=================================
+MPI CC: procs=4 iters=22 time=33.007515 s components=1
+--------------------------------------------------------------------------
+prterun noticed that process rank 3 with PID 4002425 on node cn32 exited on
+signal 11 (Segmentation fault).
+--------------------------------------------------------------------------

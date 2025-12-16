@@ -1,0 +1,10 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2227860
+Job Name:      Friendster_1Node
+Node Count:    1
+Memory/Node:   64GB
+Description:   Friendster 1 Node (Hybrid: 8 MPI x 16 Cilk)
+==========================================
+Error: Local 'opencilk' directory not found at /var/opencilk

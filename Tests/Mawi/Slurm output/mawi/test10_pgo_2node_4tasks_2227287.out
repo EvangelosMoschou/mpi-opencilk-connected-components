@@ -1,0 +1,34 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2227287
+Job Name:      MPI_PGO_Test10_2Node_4Tasks
+Description:   PGO ENABLED Test (Based on Test 7)
+Mode:          PGO (Profile-Guided Optimization)
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Using Matrix: ./Mat File/mawi_201512020330.mat
+
+>>> Starting PGO Workflow <<<
+[PGO 1/4] Building Generation Binary...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+rm -rf obj bin logs/*.profraw logs/*.profdata
+rm -rf obj_mpi obj_cilk # Remove legacy build directories
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -c src/main_mpi.c -o obj/test10/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -c bfsmpi/BFSmpi.c -o obj/test10/mpi/bfsmpi/BFSmpi.o
+bfsmpi/BFSmpi.c:564:15: warning: '__cilkrts_get_worker_number' is deprecated [-Wdeprecated-declarations]
+        tid = __cilkrts_get_worker_number();
+              ^
+/home/e/evangelm/Project2PKD/opencilk/lib/clang/16/include/cilk/cilk_api.h:17:59: note: '__cilkrts_get_worker_number' has been explicitly marked deprecated here
+unsigned __cilkrts_get_worker_number(void) __attribute__((deprecated));
+                                                          ^
+1 warning generated.
+mpicc -fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -c bfsmpi/partition.c -o obj/test10/mpi/bfsmpi/partition.o
+mpicc -fopencilk -O3 -march=native -flto -fprofile-instr-generate -Wall -I. -Isrc -Ibfsmpi -c src/mat_to_csr.c -o obj/test10/mpi/src/mat_to_csr.o
+src/mat_to_csr.c:4:10: fatal error: 'matio.h' file not found
+#include <matio.h>
+         ^~~~~~~~~
+1 error generated.
+make: *** [Makefile:105: obj/test10/mpi/src/mat_to_csr.o] Error 1
+Error: Build failed!

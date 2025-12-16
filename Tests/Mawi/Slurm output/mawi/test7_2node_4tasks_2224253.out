@@ -1,0 +1,84 @@
+==========================================
+       SLURM JOB CONFIGURATION            
+==========================================
+Job ID:        2224253
+Job Name:      MPI_Test7_2Node_4Tasks
+Node Count:    2
+Tasks/Node:    4
+CPUs/Task:     6
+Memory/Node:   32GB
+Date:          Thu Dec 11 08:23:57 PM EET 2025
+Description:   Medium Scaling (2 Nodes, 4 Tasks/Node, 6 Core/Task, 32GB)
+==========================================
+Using Local OpenCilk from /home/e/evangelm/Project2PKD/opencilk
+Building project in /home/e/evangelm/Project2PKD...
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+rm -rf obj bin logs/*.profraw logs/*.profdata
+rm -rf obj_mpi obj_cilk # Remove legacy build directories
+[Config] Local OpenCilk: /home/e/evangelm/Project2PKD/opencilk/bin/clang
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c src/main_mpi.c -o obj/mpi/src/main_mpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c bfsmpi/BFSmpi.c -o obj/mpi/bfsmpi/BFSmpi.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c bfsmpi/partition.c -o obj/mpi/bfsmpi/partition.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -c src/mat_to_csr.c -o obj/mpi/src/mat_to_csr.o
+mpicc -fopencilk -O3 -march=native -Wall -Wno-deprecated-declarations -I. -Isrc -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/hdf5-1.14.3-ml6jz55bs5nbvtd464zvdl7v7xq6hmc2/include -I/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/zlib-ng-2.1.6-nviqj7sygumngv7e6eeks4nysezl2wxf/include -DWITH_GZFILEOP -Ibfsmpi  -o bin/mpi/main obj/mpi/src/main_mpi.o obj/mpi/bfsmpi/BFSmpi.o obj/mpi/bfsmpi/partition.o obj/mpi/src/mat_to_csr.o -L/mnt/apps/aristotle/site/linux-rocky9-x86_64/gcc-13.2.0/matio-1.5.26-xzs7hxflpjg5hrppz7ht767mulj2i665/lib -lmatio -fopencilk
+Using Matrix: ./Mat File/mawi_201512020330.mat
+Nodes: 2
+CPUs per task: 6
+No PMIx server was reachable, but a PMI1/2 was detected.
+If srun is being used to launch application,  8 singletons will be started.
+[1765477441.094520] [cn41:411097:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765477441.094520] [cn41:411097:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=1 iters=12 time=5.324886 s components=3971144
+[1765477441.039377] [cn42:1790227:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765477441.039377] [cn42:1790227:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=1 iters=12 time=5.539193 s components=3971144
+[1765477441.096183] [cn41:411096:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765477441.096183] [cn41:411096:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=1 iters=12 time=5.372516 s components=3971144
+[1765477441.039526] [cn42:1790229:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765477441.039526] [cn42:1790229:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=1 iters=12 time=5.541603 s components=3971144
+[1765477441.096107] [cn41:411098:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765477441.096107] [cn41:411098:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=1 iters=14 time=5.440867 s components=3971144
+[1765477441.095924] [cn41:411095:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765477441.095924] [cn41:411095:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=1 iters=13 time=5.396008 s components=3971144
+[1765477441.035387] [cn42:1790228:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765477441.035387] [cn42:1790228:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=1 iters=12 time=5.460082 s components=3971144
+[1765477441.035355] [cn42:1790230:0]          parser.c:2033 UCX  WARN  unused environment variable: UCX_ROOT (maybe: UCX_PROTOS?)
+[1765477441.035355] [cn42:1790230:0]          parser.c:2033 UCX  WARN  (set UCX_WARN_UNUSED_ENV_VARS=n to suppress this warning)
+Using Distributed Graph Loading (Edge Balanced)...
+Balanced Partition:
+  Rank 0: Rows 0 - 226196185
+MPI BFS Config: Sampling Rounds=0, K=2, Prefetch Dist=16, Zero Planting=1, Hybrid Packing=1
+MPI CC: procs=1 iters=12 time=5.768380 s components=3971144

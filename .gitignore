@@ -6,7 +6,7 @@ obj_mpi/
 *.o
 *.so
 *.a
-*.out
+
 main_best
 
 # Logs and Profiling data
