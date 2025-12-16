@@ -42,7 +42,7 @@
     \normalsize Parallel and Distributed Computing
 }
 \author{
-    Evangelos Moschou & Elena Paricio (Erasmus student)\\
+    Evangelos Moschou \& Elena Paricio (Erasmus student)\\
     \texttt{AEM: 10986}
 }
 \date{\today}
@@ -78,7 +78,7 @@ The input graphs are stored in MATLAB's \texttt{.mat} format and converted to Co
 % Section 2: Algorithm Design
 % ------------------------------------------------------------------------------
 \section{Algorithm Design}
-%-----------------------
+
 \subsection{Graph Representation}
 
 The input graph is stored using the Compressed Sparse Row (CSR) format, consisting of the arrays \texttt{row\_ptr[n+1]} and \texttt{col\_idx[m]}, where \texttt{row\_ptr} defines the adjacency list boundaries and \texttt{col\_idx} stores destination vertices. This representation provides $O(1)$ neighbor access, good cache locality, and is well suited for large sparse graphs. CSR is also convenient for distributed memory, since vertex ranges can be cleanly partitioned across MPI ranks while keeping adjacency lists contiguous in memory.
@@ -101,20 +101,6 @@ Since MPI ranks do not share memory, label updates involving remote vertices mus
 \paragraph{Global convergence detection.}
 Termination cannot be decided locally. In the frontier-based BFS variant, convergence is detected when the global frontier size becomes zero, computed using \texttt{MPI\_Allreduce} with a SUM operation across all ranks. In the asynchronous variant, a quiescence detection mechanism is implemented by tracking globally sent and received messages and using non-blocking collective operations (\texttt{MPI\_Iallreduce}) while continuing to poll for incoming updates.
 
-
-%---------------------------
-
-\subsection{Graph Representation}
-Graphs are stored in CSR format with \texttt{row\_ptr[n+1]} (pointers to adjacency lists) and \texttt{col\_idx[m]} (destination vertices). This provides $O(1)$ neighbor access and efficient cache utilization.
-
-\subsection{Label Propagation}
-The algorithm uses iterative label propagation: initialize each vertex with its own ID, propagate minimum labels among neighbors, and repeat until convergence.
-
-\subsection{Parallelization Strategy}
-\begin{itemize}
-    \item \textbf{MPI}: Graph partitioned across ranks with edge-balanced distribution.
-    \item \textbf{OpenCilk}: Within each rank, \texttt{cilk\_for} parallelizes vertex processing with work-stealing.
-\end{itemize}
 
 % ------------------------------------------------------------------------------
 % Section 3: Optimizations

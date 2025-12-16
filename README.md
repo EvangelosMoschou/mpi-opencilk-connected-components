@@ -154,3 +154,13 @@ mpirun -np 4 --bind-to none ./bin/mpi/main "Mat file/kmer_V1r.mat"
 
 Academic project for AUTH Parallel Computing course.
 
+---
+
+## Future Optimizations
+
+### Graph Compression for Low RAM Machines
+For machines with limited RAM (e.g., 16GB) where OOM is a risk.
+- **Proposed Solution**: Implement **Delta Compression** (e.g., Varint/VByte) for the CSR column indices.
+- **Benefit**: Can reduce graph size by 2x-4x (e.g., Friendster down to ~4-6GB), fitting easily in small RAM.
+- **Trade-off**: Increases CPU usage significantly as neighbors must be decoded on-the-fly during traversal. Ideal for memory-constrained environments where feasibility is more important than raw speed.
+
