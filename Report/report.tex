@@ -78,6 +78,31 @@ The input graphs are stored in MATLAB's \texttt{.mat} format and converted to Co
 % Section 2: Algorithm Design
 % ------------------------------------------------------------------------------
 \section{Algorithm Design}
+%-----------------------
+\subsection{Graph Representation}
+
+The input graph is stored using the Compressed Sparse Row (CSR) format, consisting of the arrays \texttt{row\_ptr[n+1]} and \texttt{col\_idx[m]}, where \texttt{row\_ptr} defines the adjacency list boundaries and \texttt{col\_idx} stores destination vertices. This representation provides $O(1)$ neighbor access, good cache locality, and is well suited for large sparse graphs. CSR is also convenient for distributed memory, since vertex ranges can be cleanly partitioned across MPI ranks while keeping adjacency lists contiguous in memory.
+
+\subsection{Label Propagation Algorithm}
+
+Connected components are computed using an iterative label propagation approach. Initially, each vertex is assigned its own global ID as a label. At each iteration, vertices propagate the minimum label among their neighbors, and the process repeats until no labels change. This algorithm is simple, scalable, and works well on large real-world graphs. Convergence is guaranteed when a global iteration completes with no further label updates.
+
+\subsection{Parallelization Strategy}
+
+\paragraph{MPI-based graph partitioning.}
+The graph is distributed across MPI ranks by assigning each process a contiguous range of global vertices $[vtx\_dist[rank], vtx\_dist[rank+1])$. This distribution is computed during initialization using a block-based (edge-aware) partitioning strategy implemented in \texttt{partition.c}. During execution, ownership of a global vertex is determined using the \texttt{get\_owner()} function, which performs a binary search on the \texttt{vtx\_dist} array (see \texttt{BFSmpi.c}). This allows each rank to distinguish between local and remote vertices efficiently.
+
+\paragraph{Local computation with OpenCilk.}
+Within each MPI rank, shared-memory parallelism is exploited using OpenCilk. Vertex processing loops are parallelized with \texttt{cilk\_for}, allowing efficient load balancing via work-stealing. This hybrid MPI + OpenCilk model enables parallelism both across nodes (distributed memory) and within nodes (shared memory).
+
+\paragraph{Inter-rank communication.}
+Since MPI ranks do not share memory, label updates involving remote vertices must be explicitly communicated. When a rank encounters an edge whose destination vertex belongs to another rank, the update is packed into a send buffer. Communication follows a standard MPI two-phase pattern: \texttt{MPI\_Alltoall} is used to exchange message sizes, and \texttt{MPI\_Alltoallv} is then used to exchange the actual variable-sized buffers containing pairs of (vertex, label). This explicit message passing is a fundamental difference from the shared-memory approach used in HW1.
+
+\paragraph{Global convergence detection.}
+Termination cannot be decided locally. In the frontier-based BFS variant, convergence is detected when the global frontier size becomes zero, computed using \texttt{MPI\_Allreduce} with a SUM operation across all ranks. In the asynchronous variant, a quiescence detection mechanism is implemented by tracking globally sent and received messages and using non-blocking collective operations (\texttt{MPI\_Iallreduce}) while continuing to poll for incoming updates.
+
+
+%---------------------------
 
 \subsection{Graph Representation}
 Graphs are stored in CSR format with \texttt{row\_ptr[n+1]} (pointers to adjacency lists) and \texttt{col\_idx[m]} (destination vertices). This provides $O(1)$ neighbor access and efficient cache utilization.
