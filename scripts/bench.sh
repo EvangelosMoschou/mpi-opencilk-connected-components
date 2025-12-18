@@ -1,4 +1,28 @@
 #!/usr/bin/env bash
+# =============================================================================
+# bench.sh - OpenCilk BFS/CC Benchmark Script
+# =============================================================================
+#
+# Purpose:
+#   Runs benchmarks for the OpenCilk (shared-memory) BFS/Connected Components
+#   implementation. Measures execution time across multiple runs and logs results.
+#
+# Usage:
+#   ./scripts/bench.sh                  # Benchmark all .mat files in 'Mat file/'
+#   ./scripts/bench.sh matrix.mat       # Benchmark a specific matrix file
+#
+# Environment Variables:
+#   REPEATS        - Number of benchmark runs per matrix (default: 5)
+#   CILK_NWORKERS  - Number of OpenCilk workers/threads (default: nproc)
+#
+# Output:
+#   logs/benchmark.log - CSV with Matrix, Algorithm, Average_Time(s)
+#
+# Notes:
+#   - Automatically generates PGO profile if not found
+#   - Uses adaptive algorithm selection (Frontier BFS vs Label Propagation)
+#
+# =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

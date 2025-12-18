@@ -1,12 +1,33 @@
 #!/bin/bash
-# scripts/build_fix_all.sh
-# "Fix Once and For All" Build Script
-# 1. Sets up all environment variables (Compiler + Libraries).
-# 2. Cleans previous dirty builds (CRITICAL).
-# 3. Compiles with "Safe" flags (No LTO, No PGO, No LLD) to guarantee success.
+# =============================================================================
+# build_fix_all.sh - Robust Cluster Build Script (Safe Mode)
+# =============================================================================
+#
+# Purpose:
+#   Builds the MPI binary with conservative flags that work on all systems.
+#   Use this when standard build fails due to LTO, PGO, or linker issues.
+#
+# What It Does:
+#   1. Sets up environment (OpenCilk, Matio library paths)
+#   2. Cleans previous builds (removes potentially corrupted object files)
+#   3. Compiles with SAFE flags:
+#      - NO -flto (avoids linker plugin errors)
+#      - NO -fuse-ld=lld (works without LLD)
+#      - NO -fprofile-instr-use (avoids PGO version mismatches)
+#
+# Usage:
+#   ./scripts/build_fix_all.sh
+#
+# Requirements:
+#   - opencilk/ directory with OpenCilk compiler
+#   - libs_matio/ directory with Matio library (or run install_matio.sh)
+#
+# Output:
+#   bin/mpi/main - Built MPI binary
+#
+# =============================================================================
 
-# --- Configuration ---
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}/..")" && pwd)"
 CILK_DIR="$PROJECT_ROOT/opencilk"
 MATIO_DIR="$PROJECT_ROOT/libs_matio"
 

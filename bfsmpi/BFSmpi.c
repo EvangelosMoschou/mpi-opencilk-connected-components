@@ -1,7 +1,26 @@
-// Keep the implementation label propagation only, use parts of other algorithms
-// But keep the base label propagation. It is asked for the assignment.
+/**
+ * @file BFSmpi.c
+ * @brief Distributed Connected Components using MPI + OpenCilk
+ *
+ * This file implements three algorithms for finding connected components:
+ *   1. Label Propagation (default) - Best for dense, small-diameter graphs
+ *   2. Frontier BFS (BFS_USE_FRONTIER=1) - Best for sparse graphs
+ *   3. Streaming Frontier BFS (BFS_USE_STREAMING_FRONTIER=1) - Overlapped comm
+ *
+ * See ARCHITECTURE.md for detailed algorithm descriptions and data structures.
+ *
+ * Key optimizations:
+ *   - Zero Planting: Start from highest-degree vertex
+ *   - Path Compression: Follow label chains during propagation
+ *   - Bitset Frontiers: Efficient changed-vertex tracking
+ *   - Edge Partitioning: Separate internal/remote edges
+ *   - Software Prefetching: Hide memory latency
+ *   - Thread-Local Buffers: Reduce contention in parallel packing
+ */
 #define _POSIX_C_SOURCE 200809L
 #include "bfs_mpi.h"
+
+/* OpenCilk support: use cilk_for for parallelism when available */
 #if defined(__opencilk) || defined(__cilk) || defined(__opencilk__)
 #include <cilk/cilk.h>
 #include <cilk/cilk_api.h>
@@ -19,7 +38,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Helper for aligned allocation (64-byte alignment for AVX-512/Cache lines)
+/**
+ * Aligned memory allocation for cache-line and SIMD efficiency.
+ * Uses 64-byte alignment for AVX-512 and optimal cache performance.
+ */
 static void *aligned_alloc_wrapper(size_t size) {
   void *ptr = NULL;
   if (posix_memalign(&ptr, 64, size) != 0) {
@@ -30,7 +52,11 @@ static void *aligned_alloc_wrapper(size_t size) {
   return ptr;
 }
 
-// Atomic Min Helper
+/**
+ * Atomic minimum update using compare-and-swap.
+ * Returns 1 if the value was updated, 0 otherwise.
+ * Used for race-free label updates in parallel propagation.
+ */
 static inline int atomic_min(int *addr, int val) {
   int old = *addr;
   while (val < old) {
@@ -41,74 +67,20 @@ static inline int atomic_min(int *addr, int val) {
   return 0;
 }
 
-// Bitset helpers
-#define BITSET_WORD_SIZE (sizeof(uint64_t) * 8)
-#define BITSET_WORDS(n) (((n) + BITSET_WORD_SIZE - 1) / BITSET_WORD_SIZE)
-
-static inline void bitset_set(uint64_t *b, int idx) {
-  __atomic_fetch_or(&b[idx / BITSET_WORD_SIZE],
-                    (1UL << (idx % BITSET_WORD_SIZE)), __ATOMIC_RELAXED);
-}
-
-static inline int bitset_test(const uint64_t *b, int idx) {
-  return (b[idx / BITSET_WORD_SIZE] & (1UL << (idx % BITSET_WORD_SIZE))) != 0;
-}
-
-static inline void bitset_clear(uint64_t *b, size_t num_words) {
-  memset(b, 0, num_words * sizeof(uint64_t));
-}
-
-// Helper to find owner of a global vertex
-// Helper to find owner of a global vertex
-// Updated to use binary search on vtx_dist for EDGE-BALANCED PARTITIONS
-static inline int get_owner(int global_id, const MPI_Graph *g) {
-  int l = 0, r = g->size - 1;
-  while (l <= r) {
-    int m = l + (r - l) / 2;
-    // Start of rank m?
-    if (global_id >= g->vtx_dist[m] && global_id < g->vtx_dist[m + 1]) {
-      return m;
-    }
-    if (global_id < g->vtx_dist[m]) {
-      r = m - 1;
-    } else {
-      l = m + 1;
-    }
-  }
-  return g->size - 1; // Fallback (should be covered)
-}
-
-typedef struct {
-  int *boundary_indices;
-  int boundary_count;
-  int *send_counts;
-  int *recv_counts;
-  int *send_displs;
-  int *recv_displs;
-  int *send_buf;
-  int *recv_buf;
-  int send_buf_cap;
-  int recv_buf_cap;
-  MPI_Request *reqs;
-} CommInfo;
-
+/* Static communication state (see CommInfo in bfs_mpi.h) */
 static CommInfo comm;
 
-// Thread Local Storage for Parallel Packing
-typedef struct {
-  int **buffers; // [rank][data...]
-  int *counts;   // [rank]
-  int *caps;     // [rank]
-} TLS_Buffer;
-
-// Forward declaration for Frontier BFS
-// Forward declaration for Frontier BFS
-int mpi_coloring_cc_bfs(MPI_Graph *g);
-int mpi_coloring_cc_bfs_streaming(MPI_Graph *g);
-
+/* ========================================================================
+ * Thread-Local Storage for Parallel Message Packing
+ * ========================================================================
+ * When BFS_HYBRID_PACKING=1 and multiple OpenCilk workers are used,
+ * each worker packs messages into its own buffer to avoid lock contention.
+ * Buffers are merged into the global send buffer after the parallel phase.
+ */
 static TLS_Buffer *tls_buffers = NULL;
 static int n_workers = 1;
 
+/** Initialize per-worker message buffers for all destination ranks. */
 void init_tls_buffers(int workers, int size) {
   n_workers = workers;
   tls_buffers = malloc(workers * sizeof(TLS_Buffer));
@@ -117,7 +89,7 @@ void init_tls_buffers(int workers, int size) {
     tls_buffers[w].counts = calloc(size, sizeof(int));
     tls_buffers[w].caps = malloc(size * sizeof(int));
     for (int p = 0; p < size; p++) {
-      tls_buffers[w].caps[p] = 4096; // Initial small cap
+      tls_buffers[w].caps[p] = 4096; // Initial capacity per destination
       tls_buffers[w].buffers[p] = malloc(tls_buffers[w].caps[p] * sizeof(int));
     }
   }
@@ -138,31 +110,39 @@ void free_tls_buffers(int workers, int size) {
   tls_buffers = NULL;
 }
 
+/* ========================================================================
+ * Communication Setup
+ * ========================================================================
+ * Prepares the graph for efficient distributed BFS by:
+ *   1. Partitioning each vertex's edges into internal (local) and remote
+ *   2. Identifying boundary vertices (those with remote neighbors)
+ *   3. Allocating communication buffers
+ */
 void setup_communication(MPI_Graph *g) {
-  // Precompute distribution parameters
-
-  // 1. In-place partition adjacency lists into Internal | Remote
   g->internal_nnz = 0;
   g->remote_nnz = 0;
   comm.boundary_count = 0;
 
   g->split_indices = aligned_alloc_wrapper(g->local_n * sizeof(long long));
 
-  // Use a temporary boundary array
   int *temp_boundary = malloc(g->local_n * sizeof(int));
   int my_start = g->vtx_dist[g->rank];
   int my_end = g->vtx_dist[g->rank + 1];
 
+  /* In-place partition: move local neighbors to front, remote to back.
+   * After this, for vertex i:
+   *   local_col_idx[row_ptr[i] .. split_indices[i]-1] = internal edges
+   *   local_col_idx[split_indices[i] .. row_ptr[i+1]-1] = remote edges
+   */
   for (int i = 0; i < g->local_n; i++) {
     long long start = g->local_row_ptr[i];
     long long end = g->local_row_ptr[i + 1];
     long long count = end - start;
 
-    // Partition range [start, end) in local_col_idx
-    // We want internal edges (in [my_start, my_end)) to be at the front
     long long left = start;
     long long right = end - 1;
 
+    /* Two-pointer partition (similar to quicksort partition) */
     while (left <= right) {
       int v = g->local_col_idx[left];
       int is_internal = (v >= my_start && v < my_end);
@@ -170,23 +150,21 @@ void setup_communication(MPI_Graph *g) {
       if (is_internal) {
         left++;
       } else {
-        // Swap with right
         int temp = g->local_col_idx[right];
         g->local_col_idx[right] = g->local_col_idx[left];
         g->local_col_idx[left] = temp;
         right--;
-        // Stay at left to check the swapped-in value
       }
     }
 
-    // left is now the split index (start of remote edges)
     g->split_indices[i] = left;
 
-    long long splits = left - start; // number of internal edges
+    long long splits = left - start;
     g->internal_nnz += splits;
     g->remote_nnz += (count - splits);
 
-    if (splits < count) { // If has remote edges
+    /* Track boundary vertices for message packing */
+    if (splits < count) {
       temp_boundary[comm.boundary_count++] = i;
     }
   }
@@ -196,13 +174,13 @@ void setup_communication(MPI_Graph *g) {
          comm.boundary_count * sizeof(int));
   free(temp_boundary);
 
-  // Init comm buffers
+  /* Allocate communication buffers (16MB initial, grows as needed) */
   comm.send_counts = calloc(g->size, sizeof(int));
   comm.recv_counts = calloc(g->size, sizeof(int));
   comm.send_displs = calloc(g->size, sizeof(int));
   comm.recv_displs = calloc(g->size, sizeof(int));
 
-  comm.send_buf_cap = 1024 * 1024 * 16; // Start with 16MB buffer
+  comm.send_buf_cap = 1024 * 1024 * 16;
   comm.recv_buf_cap = 1024 * 1024 * 16;
   comm.send_buf = aligned_alloc_wrapper(comm.send_buf_cap * sizeof(int));
   comm.recv_buf = aligned_alloc_wrapper(comm.recv_buf_cap * sizeof(int));
@@ -220,9 +198,20 @@ void cleanup_communication() {
   free(comm.reqs);
 }
 
+/* ========================================================================
+ * Label Propagation Algorithm (Default)
+ * ========================================================================
+ * Iteratively propagates minimum labels until convergence.
+ * Each iteration:
+ *   1. Local propagation with path compression
+ *   2. Pack remote neighbor updates into messages
+ *   3. Exchange messages via MPI_Alltoall + Isend/Irecv
+ *   4. Apply received label updates
+ *   5. Check global convergence
+ */
 int mpi_coloring_cc(MPI_Graph *g) {
-  // Adaptive dispatcher: check if Frontier BFS should be used
-  static int use_frontier = -1; // -1 = not checked yet
+  /* Adaptive dispatcher: select algorithm based on environment variables */
+  static int use_frontier = -1;
   static int use_streaming = -1;
   if (use_frontier == -1) {
     char *env = getenv("BFS_USE_FRONTIER");
@@ -242,7 +231,6 @@ int mpi_coloring_cc(MPI_Graph *g) {
   }
 
   if (use_streaming) {
-    // Streaming BFS manages its own buffers, skips setup_communication
     return mpi_coloring_cc_bfs_streaming(g);
   }
 
@@ -251,7 +239,7 @@ int mpi_coloring_cc(MPI_Graph *g) {
     return mpi_coloring_cc_bfs(g);
   }
 
-  // Fall through to Label Propagation (default)
+  /* Default: Label Propagation */
   setup_communication(g);
 
   int rank = g->rank;
@@ -754,31 +742,10 @@ int mpi_coloring_cc(MPI_Graph *g) {
 // STREAMING FRONTIER BFS IMPLEMENTATION
 // ======================================================================
 
-typedef struct {
-  int *primary;    // Buffer currently being filled
-  int *secondary;  // Buffer currently being sent (or free)
-  int count;       // Number of items in primary
-  int cap;         // Capacity of each buffer (entries, not bytes)
-  MPI_Request req; // Request for the secondary buffer (if in flight)
-  int active;      // 1 if a send is currently active (req is valid)
-} StreamBuffer;
-
+// Static state for streaming BFS
 static StreamBuffer *stream_bufs = NULL;
 static int *stream_recv_buf = NULL;
 static int stream_recv_cap = 0;
-// We need a way to track if we need to terminate.
-// We use a non-blocking barrier approach or a token ring.
-// A simpler robust way for "level completion" in async settings without
-// extensive barriers is:
-// 1. All ranks process their current frontier.
-// 2. While processing, they send messages.
-// 3. Occasionally they probe and receive messages.
-// 4. When local frontier is done, they enter a "Flush & Wait" state.
-// 5. In "Flush & Wait", they flush any remaining buffers.
-// 6. Then they use a non-blocking termination detection (Ibarrier or
-// consensus).
-
-// Old init/free removed. Using new thread-safe versions below.
 
 // Poll and process incoming messages
 // Returns number of integers received (for termination detection)
@@ -826,12 +793,7 @@ static long long poll_and_process_stream(MPI_Graph *g, int *labels,
   return total_received;
 }
 
-// Context for Streaming BFS
-typedef struct {
-  long long total_sent;
-  long long total_recv;
-} StreamContext;
-
+// Static context for streaming BFS
 static StreamContext ctx;
 
 // Wrapper to update context
@@ -881,14 +843,7 @@ static void wait_wrapper(int size, MPI_Graph *g, int *labels, int my_offset,
   }
 }
 
-// TLS for Streaming BFS (Thread-Local Buffers per destination rank)
-
-typedef struct {
-  int **buffers; // [size][cap]
-  int *counts;   // [size]
-  int *caps;     // [size]
-} TLS_Stream_Dynamic;
-
+// Static TLS state for streaming BFS
 static TLS_Stream_Dynamic *tls_stream_dyn = NULL;
 static pthread_mutex_t *stream_locks = NULL; // Locks for global stream buffers
 

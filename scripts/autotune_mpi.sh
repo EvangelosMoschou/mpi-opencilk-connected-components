@@ -1,4 +1,35 @@
 #!/usr/bin/env bash
+# =============================================================================
+# autotune_mpi.sh - Automatic MPI+OpenCilk Configuration Optimizer
+# =============================================================================
+#
+# Purpose:
+#   Automatically finds the optimal MPI×Cilk configuration for a given graph.
+#   Uses Profile-Guided Optimization (PGO) for each configuration tested.
+#
+# How It Works:
+#   1. Detects available cores (via nproc)
+#   2. Generates all valid P×W configurations (where P×W = total cores)
+#   3. For each configuration:
+#      a. Build with PGO instrumentation
+#      b. Run once to generate profile
+#      c. Rebuild with PGO optimization
+#      d. Benchmark 3 times, keep best
+#   4. Reports best configuration and saves optimized binary
+#
+# Usage:
+#   ./scripts/autotune_mpi.sh                 # Auto-detect matrix
+#   ./scripts/autotune_mpi.sh matrix.mat      # Use specific matrix
+#
+# Output:
+#   ./main_best              - Best optimized binary
+#   logs/best.profdata       - PGO profile for best configuration
+#
+# Requirements:
+#   - llvm-profdata (for profile merging)
+#   - OpenCilk clang with PGO support
+#
+# =============================================================================
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

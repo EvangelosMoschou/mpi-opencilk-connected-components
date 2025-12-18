@@ -1,3 +1,21 @@
+/**
+ * @file mat_to_csr.c
+ * @brief Graph loading and preprocessing for BFS/CC algorithms
+ *
+ * This module handles:
+ *   1. Reading MATLAB .mat files (v5 and v7.3/HDF5 formats)
+ *   2. Converting sparse matrices to CSR format
+ *   3. Graph preprocessing (symmetrization, degree-based reordering)
+ *   4. Caching preprocessed graphs as .csrbin files
+ *   5. Distributed loading for MPI applications
+ *
+ * See ARCHITECTURE.md for detailed documentation.
+ *
+ * Dependencies:
+ *   - matio: MATLAB v5/v7 file reading
+ *   - hdf5: MATLAB v7.3 (HDF5) file reading
+ *   - OpenCilk: Parallel preprocessing (optional)
+ */
 #define _POSIX_C_SOURCE 200809L
 #include <fcntl.h>
 #include <inttypes.h>
@@ -9,6 +27,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* OpenCilk support for parallel preprocessing */
 #ifdef __opencilk
 #include <cilk/cilk.h>
 #include <cilk/cilk_api.h>
@@ -20,7 +39,13 @@
 
 #include "mat_to_csr.h"
 
-// Helper for aligned allocation (64-byte alignment for AVX-512/Cache lines)
+/* ========================================================================
+ * Memory Utilities
+ * ======================================================================== */
+
+/**
+ * Aligned allocation (64-byte) for cache and SIMD efficiency.
+ */
 void *aligned_alloc_wrapper(size_t size) {
   void *ptr = NULL;
   if (posix_memalign(&ptr, 64, size) != 0) {
@@ -29,17 +54,22 @@ void *aligned_alloc_wrapper(size_t size) {
   return ptr;
 }
 
+/** Free CSR structure memory. */
 void clean_csr_vectors(CSR_info vecs) {
   free(vecs.row_ptr);
   free(vecs.col_idx);
 }
 
-// Compare function for qsort
+/* ========================================================================
+ * Sorting Utilities
+ * ======================================================================== */
+
+/** Compare function for qsort (ascending order). */
 static int cmp_int(const void *a, const void *b) {
   return (*(int *)a - *(int *)b);
 }
 
-// Insertion sort for small arrays (faster than qsort)
+/** Insertion sort for small arrays (faster than qsort for n < 32). */
 static void insertion_sort(int *arr, int n) {
   for (int i = 1; i < n; i++) {
     int key = arr[i];
@@ -52,7 +82,11 @@ static void insertion_sort(int *arr, int n) {
   }
 }
 
-// Sort array and remove duplicates in-place. Returns new count.
+/**
+ * Sort array and remove duplicates in-place.
+ * Uses insertion sort for small arrays, qsort otherwise.
+ * Returns: new count after deduplication.
+ */
 static int sort_deduplicate_row(int *arr, int count) {
   if (count <= 0)
     return 0;
@@ -70,47 +104,47 @@ static int sort_deduplicate_row(int *arr, int count) {
   return unique;
 }
 
-typedef struct {
-  int id;
-  int degree;
-} NodeDegree;
+/* ========================================================================
+ * Degree-Based Sorting
+ * ======================================================================== */
 
+/* NodeDegree struct is defined in mat_to_csr.h */
+
+/** Compare function for sorting by degree (descending). */
 static int cmp_degree_desc(const void *a, const void *b) {
   NodeDegree *n1 = (NodeDegree *)a;
   NodeDegree *n2 = (NodeDegree *)b;
   if (n1->degree != n2->degree) {
-    return n2->degree - n1->degree; // Descending
+    return n2->degree - n1->degree; /* Descending by degree */
   }
-  return n1->id - n2->id; // Ascending ID as tie-breaker
+  return n1->id - n2->id; /* Ascending ID as tie-breaker */
 }
 
-// Check if graph is symmetric
+/* ========================================================================
+ * Graph Symmetry Operations
+ * ======================================================================== */
+
+/**
+ * Check if graph is symmetric (A == A^T).
+ * Uses parallel binary search to verify each edge has its reverse.
+ * Assumes rows are sorted.
+ */
 static int is_symmetric(const CSR_info *csr) {
   int symmetric = 1;
-  // We can check a subset of edges or full check. Full check is safer.
-  // Since we sort rows, we can check if u->v implies v->u exists.
-  // This is expensive (O(E log D)), so we might just assume NO and symmetrize
 
-  // if unsure, but the user asked for a check. Optimization: Check random
-  // samples? Or just do full check in parallel? Let's do a full check but
-  // parallelized.
-
-  // Note: This check assumes rows are sorted!
   cilk_for(int i = 0; i < csr->nrows; i++) {
     if (!symmetric)
-      continue; // Early exit (best effort in parallel)
+      continue; /* Best-effort early exit in parallel */
     for (long long j = csr->row_ptr[i]; j < csr->row_ptr[i + 1]; j++) {
       int neighbor = csr->col_idx[j];
       if (neighbor == i)
-        continue; // Self-loop is symmetric
+        continue; /* Self-loop is symmetric */
 
-      // Check if edge neighbor->i exists
+      /* Binary search for reverse edge (neighbor → i) */
       int found = 0;
-      long long start = csr->row_ptr[neighbor];
-      long long end = csr->row_ptr[neighbor + 1];
+      long long low = csr->row_ptr[neighbor];
+      long long high = csr->row_ptr[neighbor + 1] - 1;
 
-      // Binary search since rows are sorted
-      long long low = start, high = end - 1;
       while (low <= high) {
         long long mid = low + (high - low) / 2;
         if (csr->col_idx[mid] == i) {
@@ -125,7 +159,6 @@ static int is_symmetric(const CSR_info *csr) {
 
       if (!found) {
         symmetric = 0;
-        // No break here to avoid race on symmetric flag (it's just 0 or 1)
       }
     }
   }
@@ -510,21 +543,25 @@ static CSR_info read_csr_bin(const char *fname) {
   return csr;
 }
 
-// HDF5 Reader for Memory Efficiency
-// Must link with -lhdf5
+/* ========================================================================
+ * HDF5 Streaming Reader (for MATLAB v7.3 files)
+ * ========================================================================
+ * Large graphs (e.g., Friendster with 1.8B edges) cannot fit in RAM.
+ * This reader streams the 'ir' array in chunks to minimize memory usage.
+ */
 #include <hdf5.h>
 
-// HDF5 Chunked Reading Helper
+/** Chunked HDF5 dataset reader for memory-efficient streaming. */
 typedef struct {
-  hid_t dset_id;
-  hid_t type_id;
-  size_t type_size;
-  hsize_t total_elems;
-  hsize_t current_idx;
-  size_t buffer_size; // Elements per chunk
-  void *buffer;
-  hsize_t buffer_end_idx; // Exclusive
-  hsize_t buffer_curr_local_idx;
+  hid_t dset_id;                 /* HDF5 dataset handle */
+  hid_t type_id;                 /* Data type (int, double, etc.) */
+  size_t type_size;              /* Size of each element */
+  hsize_t total_elems;           /* Total elements in dataset */
+  hsize_t current_idx;           /* Current read position */
+  size_t buffer_size;            /* Elements per chunk */
+  void *buffer;                  /* Read buffer */
+  hsize_t buffer_end_idx;        /* End of current buffer (exclusive) */
+  hsize_t buffer_curr_local_idx; /* Current position in buffer */
 } H5Streamer;
 
 static int h5_streamer_init(H5Streamer *s, hid_t dset_id, hid_t type_id,

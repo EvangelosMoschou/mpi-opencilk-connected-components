@@ -36,3 +36,12 @@ opencilk-*/
 # Notes
 Improvement notes.txt
 STREAMING_FRONTIER_NOTES.txt
+
+# LaTeX
+*.aux
+*.out
+*.toc
+*.log
+*.blg
+*.bbl
+

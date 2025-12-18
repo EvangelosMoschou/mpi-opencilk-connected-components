@@ -1,4 +1,35 @@
 #!/bin/bash
+# =============================================================================
+# run_local_fast.sh - Local Friendster Benchmark with PGO
+# =============================================================================
+#
+# Purpose:
+#   Runs the MPI implementation on com-Friendster.mat locally with
+#   Profile-Guided Optimization (PGO) for maximum performance.
+#
+# Workflow:
+#   1. Build with PGO instrumentation
+#   2. Run once to generate profile data
+#   3. Merge profile data
+#   4. Rebuild with PGO optimization
+#   5. Run final optimized benchmark
+#
+# Memory Optimizations Enabled:
+#   - BFS_ASSUME_SYMMETRIC=1  (skip symmetrization, saves 3x RAM)
+#   - BFS_SKIP_REORDER=1      (skip reordering, saves 2x RAM)
+#   - BFS_ZERO_PLANTING=1     (start from high-degree vertex)
+#   - BFS_HUB_PUSH=1          (propagate through hubs)
+#
+# Configuration (edit below):
+#   MAT_FILE      - Graph file to benchmark
+#   PROCS         - Number of MPI processes
+#   CPUS_PER_PROC - OpenCilk workers per process
+#
+# Output:
+#   bin/local_fast/mpi/main          - PGO-optimized binary
+#   logs/bfsmpi_local_fast.profdata  - PGO profile data
+#
+# =============================================================================
 
 # Configuration
 MAT_FILE="com-Friendster.mat"  # ~65M vertices, ~1.8B edges

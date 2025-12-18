@@ -1,5 +1,27 @@
 #!/usr/bin/env bash
-# bench_mpi.sh - Run MPI+Cilk benchmarks for different process/worker configurations
+# =============================================================================
+# bench_mpi.sh - MPI+OpenCilk Hybrid Benchmark Script
+# =============================================================================
+#
+# Purpose:
+#   Benchmarks the MPI+OpenCilk hybrid implementation with different
+#   process/worker configurations to find optimal parallelization strategy.
+#
+# Usage:
+#   ./scripts/bench_mpi.sh                    # Auto-detect matrix
+#   ./scripts/bench_mpi.sh matrix.mat         # Use specific matrix
+#   ./scripts/bench_mpi.sh matrix.mat 5       # 5 repeats per config
+#
+# Default Configurations Tested (16 cores total):
+#   1×16  - 1 MPI process,  16 Cilk workers  (shared-memory only)
+#   2×8   - 2 MPI processes, 8 Cilk workers
+#   4×4   - 4 MPI processes, 4 Cilk workers
+#   8×2   - 8 MPI processes, 2 Cilk workers
+#
+# Output:
+#   logs/benchmark_mpi.log - Timing results for each configuration
+#
+# =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

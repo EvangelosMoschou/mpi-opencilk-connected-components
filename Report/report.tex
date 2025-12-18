@@ -245,7 +245,7 @@ Local Parallel & 1 Node (16 Cilk Workers) & 16 & \textbf{1.30} & \textbf{2778.6}
 \end{table}
 
 \textbf{Analysis:}
-The local workstation (Ryzen 7 5800H, 32GB RAM, ~20GB used) significantly outperforms the cluster for this specific workload.
+The local workstation (Ryzen 7 5800H, 32GB RAM, ~14.5GB (peak usage)) significantly outperforms the cluster for this specific workload.
 \begin{itemize}
     \item \textbf{Local Speedup}: The shared-memory Cilk implementation (Label Propagation) running on a single consumer node completes in \textbf{1.30s}, which is \textbf{23x faster} than the best distributed run on the cluster (29.86s).
     \item \textbf{Overhead}: The cluster performance is dominated by the overhead of the distributed Frontier BFS algorithm (partitioning, communication, message packing) which is necessary for scaling to multi-terabyte graphs but inefficient for graphs that fit in a single node's RAM relative to a zero-overhead shared-memory approach.
