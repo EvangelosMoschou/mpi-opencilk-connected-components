@@ -93,12 +93,16 @@ You can control all optimizations via environment variables:
 - **Hybrid Packing (`BFS_HYBRID_PACKING=1`)**: Fully parallelizes the MPI communication layer using OpenCilk threads inside each MPI rank. 
   - *Note:* Requires `CILK_NWORKERS > 1` and `mpirun --bind-to none` to be effective.
 
-### 10. HDF5 Converter Optimizations (`mat_to_csr.c`)
-The matrix conversion tool uses a highly optimized **2-Pass Chunked Streaming** approach to handle massive graphs (like Friendster) on commodity hardware:
-- **Chunked HDF5 Streaming:** Reads the `.mat` file in 32MB chunks to avoid loading the full 14GB+ file into RAM.
-- **Parallel Construction:** Uses `cilk_for` to parallelize degree calculation, graph construction, and row sorting.
-- **On-the-fly Symmetrization:** Constructs $A \cup A^T$ directly during the build phase without ever allocating the transpose matrix, saving 50% memory.
-- **Result:** Successfully converts and reorders the **65M vertex / 3.6B edge** Friendster graph on a single 32GB node in minutes.
+### 10. HDF5 Converter & Streaming Reader (`mat_to_csr.c`)
+The matrix conversion tool uses a highly optimized **2-Pass Chunked Streaming** approach to handle massive graphs (like Friendster) on commodity hardware without requiring 128GB+ RAM:
+
+- **Why HDF5?** MATLAB v7.3 files use HDF5. Standard libraries like `libmatio` often attempt to load the entire `ir` (row index) array (~14GB for Friendster) into memory at once, leading to OOM. 
+- **Custom H5Streamer:** We implemented a low-level HDF5 streamer that reads the `ir` dataset in small 32MB chunks.
+- **Two-Pass Algorithm:**
+    - **Pass 1:** Streams through the file once to calculate the degree of every vertex for **On-the-fly Symmetrization** ($A \cup A^T$).
+    - **Pass 2:** Calculates the **Degree-Based Permutation** and streams the file a second time to build the reordered CSR directly into its final location.
+- **Parallel Optimization:** Once the data is streamed from disk, sorting and deduplication are parallelized using **OpenCilk**.
+- **Result:** Converts and reorders the **65M vertex / 3.6B edge** Friendster graph on a single 32GB node in under 10 minutes.
 
 ### Usage Examples
 
