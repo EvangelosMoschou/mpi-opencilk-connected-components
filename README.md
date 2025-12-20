@@ -131,11 +131,12 @@ mpirun -np 4 --bind-to none ./bin/mpi/main "Mat file/kmer_V1r.mat"
 | :--- | :--- | :--- | :--- |
 | **com-LiveJournal** | OpenCilk | **~0.03s** | Instant convergence due to Hub Push. |
 | **com-LiveJournal** | MPI (8 procs) | **~1.3s** | Communication overhead dominates. |
-| **mawi_201512** | MPI (8 procs) | **~4.82s** | Async BFS + Edge-Balanced Partitioning. |
+| **mawi_201512** | MPI (8 procs) | **~4.82s** | Async Label Prop (Hub Push Heuristic active). |
+| **mawi_201512** | MPI (8 procs) | **~12.15s** | Sync Label Prop + PGO (Hub Push active, cluster overloaded). |
 | **kmer_V1r** | OpenCilk | **~9.15s** | Graph Reordering + Early Retirement. |
-| **kmer_V1r** | MPI (8 procs) | **~31.28s** | Hub Push OFF + Graph Reordering. |
-| **com-Friendster** | OpenCilk | **~1.30s** | Label Propagation + Hub Push (Local 32GB RAM). |
-| **com-Friendster** | MPI (128 cores) | **~29.86s** | Streaming Frontier BFS (Cluster). |
+| **kmer_V1r** | MPI (8 procs) | **~31.28s** | Hub Push OFF (Mesh graph benefit) + Graph Reordering. |
+| **com-Friendster** | OpenCilk | **~1.30s** | Label Prop + Hub Push (Local 32GB RAM). |
+| **com-Friendster** | MPI (128 cores) | **~29.86s** | Streaming Frontier BFS (No Hub Push). |
 
 ---
 
