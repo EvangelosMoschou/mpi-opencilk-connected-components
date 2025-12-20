@@ -13,6 +13,14 @@ The application processes large undirected graphs stored in MATLAB `.mat` format
 1.  **MPI (Message Passing Interface):** Distributes the graph vertices across multiple nodes/processes.
 2.  **OpenCilk:** Parallelizes local computation within each process using a work-stealing scheduler.
 
+### Prerequisites
+
+- **Clang with OpenCilk:** For shared-memory parallelism.
+- **MPI:** For distributed-memory parallelism.
+- **Libraries:** `libmatio`, `libhdf5`.
+
+For detailed building and running instructions, see [usage.md](usage.md).
+
 ### Key Features
 
 - **Hybrid Parallelism:** Combines MPI for inter-node communication and OpenCilk for intra-node parallelism.
